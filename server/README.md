@@ -28,7 +28,7 @@ Go-модуль, точка входа `cmd/vtt`. Первый шаг — не �
 и тесты должны существовать с первого коммита.
 
 Требования к поведению — [../docs/01-users-and-roles.md](../docs/01-users-and-roles.md)
-и [../docs/06-admin-and-access.md](../docs/06-admin-and-access.md).
+и [ADMIN.md](ADMIN.md) (панель, вход, сертификат, обновления — бывший `docs/06`).
 
 ## Состояние
 
