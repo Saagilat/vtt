@@ -1,0 +1,43 @@
+name: launcher
+
+# CI по путям (docs/07-projects.md, §3, правило 4): правка в launcher/ запускает только его.
+on:
+  push:
+    paths:
+      - 'launcher/**'
+      - '.github/workflows/launcher.yml'
+  pull_request:
+    paths:
+      - 'launcher/**'
+      - '.github/workflows/launcher.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: launcher/go.mod
+          cache: false  # зависимостей нет — кешировать нечего
+      - name: Форматирование — gofmt не находит, что менять
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "не отформатировано (нужно gofmt -w .):"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Разбор — go vet
+        run: go vet ./...
+      - name: Тесты
+        run: go test ./...
+      - name: Сборка релизного бинаря (D41) — windows/amd64 без cgo
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o vtt-launcher.exe ./cmd/vtt-launcher
+          ls -l vtt-launcher.exe

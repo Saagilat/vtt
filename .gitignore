@@ -15,9 +15,12 @@ venv/
 .idea/
 .vscode/
 
-# Сборка Go / Node (появятся вместе с server/ и client/)
+# Сборка Go
 /server/vtt
 /server/bin/
+/launcher/bin/
+/launcher/vtt-launcher
+/launcher/vtt-launcher.exe
 /node_modules/
 
 # Локальные временные файлы и замеры
