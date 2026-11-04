@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Редакторы и ОС
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Сборка Go / Node (появятся вместе с server/ и client/)
+/server/vtt
+/server/bin/
+/node_modules/
+
+# Локальные временные файлы и замеры
+/tmp/
+*.log

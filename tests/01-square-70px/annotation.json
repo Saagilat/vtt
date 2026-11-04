@@ -1,0 +1,249 @@
+{
+  "format": "vtt.annotation",
+  "version": 1,
+  "image": {
+    "file": "original.jpg",
+    "width": 840,
+    "height": 840,
+    "sha256": "0d2559e31e2c1c931b0d6a32b0001f210720a640b617a86b8bd02a497c07cbd9"
+  },
+  "grid": {
+    "mode": "square",
+    "origin": {
+      "x": 105,
+      "y": 105
+    },
+    "rotation_deg": 0,
+    "square": {
+      "side_px": 70
+    },
+    "unit": "ft",
+    "units_per_cell": 5
+  },
+  "producer": {
+    "kind": "auto",
+    "engine": "make_synthetic",
+    "engine_version": "0.1"
+  },
+  "erasure": {
+    "applied": false
+  },
+  "elements": [
+    {
+      "id": 1,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 70,
+          "y": 70
+        },
+        {
+          "x": 770,
+          "y": 70
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 770,
+          "y": 70
+        },
+        {
+          "x": 770,
+          "y": 770
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 770,
+          "y": 770
+        },
+        {
+          "x": 630,
+          "y": 770
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 560,
+          "y": 770
+        },
+        {
+          "x": 70,
+          "y": 770
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 70,
+          "y": 770
+        },
+        {
+          "x": 70,
+          "y": 70
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 420,
+          "y": 70
+        },
+        {
+          "x": 420,
+          "y": 350
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 420,
+          "y": 350
+        },
+        {
+          "x": 560,
+          "y": 350
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 1.0,
+      "points": [
+        {
+          "x": 630,
+          "y": 350
+        },
+        {
+          "x": 770,
+          "y": 350
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "door",
+      "origin": "auto",
+      "confidence": 1.0,
+      "span": [
+        {
+          "x": 560,
+          "y": 770
+        },
+        {
+          "x": 630,
+          "y": 770
+        }
+      ],
+      "kind": "common",
+      "width_px": 70.0,
+      "wall_id": 4
+    },
+    {
+      "id": 10,
+      "type": "door",
+      "origin": "auto",
+      "confidence": 1.0,
+      "span": [
+        {
+          "x": 560,
+          "y": 350
+        },
+        {
+          "x": 630,
+          "y": 350
+        }
+      ],
+      "kind": "opening",
+      "width_px": 70.0,
+      "wall_id": 7
+    },
+    {
+      "id": 11,
+      "type": "area",
+      "origin": "auto",
+      "confidence": 1.0,
+      "area_kind": "water",
+      "polygon": [
+        {
+          "x": 70,
+          "y": 420
+        },
+        {
+          "x": 280,
+          "y": 420
+        },
+        {
+          "x": 280,
+          "y": 630
+        },
+        {
+          "x": 70,
+          "y": 630
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "area",
+      "origin": "auto",
+      "confidence": 1.0,
+      "area_kind": "difficult",
+      "polygon": [
+        {
+          "x": 420,
+          "y": 420
+        },
+        {
+          "x": 560,
+          "y": 420
+        },
+        {
+          "x": 560,
+          "y": 560
+        },
+        {
+          "x": 420,
+          "y": 560
+        }
+      ]
+    }
+  ]
+}

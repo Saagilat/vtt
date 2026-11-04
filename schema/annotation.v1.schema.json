@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vtt.example/schema/annotation.v1.schema.json",
+  "title": "VTT map annotation, version 1",
+  "description": "Формат разметки карты. Словами — docs/05-map-annotation.md. Здесь структурные ограничения; смысловые (точки внутри картинки, уникальность id, ссылки на стены, стирание только в производной копии) — tools/validate_annotation.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "image", "grid", "elements"],
+  "properties": {
+    "format": { "const": "vtt.annotation" },
+    "version": { "const": 1 },
+    "image": { "$ref": "#/$defs/image" },
+    "grid": { "$ref": "#/$defs/grid" },
+    "producer": { "$ref": "#/$defs/producer" },
+    "erasure": { "$ref": "#/$defs/erasure" },
+    "elements": {
+      "type": "array",
+      "maxItems": 200000,
+      "items": { "$ref": "#/$defs/element" }
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "width", "height"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "original_file": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "width": { "type": "integer", "minimum": 16, "maximum": 32768 },
+        "height": { "type": "integer", "minimum": 16, "maximum": 32768 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["none", "square", "hex"] },
+        "origin": { "$ref": "#/$defs/point" },
+        "rotation_deg": { "type": "number", "minimum": -360, "maximum": 360 },
+        "square": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["side_px"],
+          "properties": {
+            "side_px": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 }
+          }
+        },
+        "hex": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["radius_px", "orientation", "stagger"],
+          "properties": {
+            "radius_px": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+            "orientation": { "enum": ["pointy", "flat"] },
+            "stagger": { "enum": ["odd", "even"] }
+          }
+        },
+        "unit": { "enum": ["ft", "m", "mi"] },
+        "units_per_cell": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "square" } }, "required": ["mode"] },
+          "then": { "required": ["origin", "square"] },
+          "else": { "not": { "required": ["square"] } }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "hex" } }, "required": ["mode"] },
+          "then": { "required": ["origin", "hex"] },
+          "else": { "not": { "required": ["hex"] } }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "none" } }, "required": ["mode"] },
+          "then": { "not": { "required": ["origin"] } }
+        }
+      ]
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["auto", "human", "mixed"] },
+        "engine": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "engine_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "erasure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applied"],
+      "properties": {
+        "applied": { "type": "boolean" },
+        "of": { "enum": ["printed-grid", "watermark"] },
+        "changed_pixels": { "type": "integer", "minimum": 0 },
+        "derived_file": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lines_checked", "lines_confirmed"],
+          "properties": {
+            "lines_checked": { "type": "integer", "minimum": 0 },
+            "lines_confirmed": { "type": "integer", "minimum": 0 },
+            "confirmed_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "applied": { "const": true } }, "required": ["applied"] },
+          "then": { "required": ["of", "derived_file", "changed_pixels", "check"] }
+        }
+      ]
+    },
+
+    "element": {
+      "oneOf": [
+        { "$ref": "#/$defs/wall" },
+        { "$ref": "#/$defs/door" },
+        { "$ref": "#/$defs/area" }
+      ]
+    },
+    "wall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "origin", "points"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "type": { "const": "wall" },
+        "origin": { "enum": ["auto", "human"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "points": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "note": { "type": "string", "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "origin": { "const": "auto" } }, "required": ["origin"] },
+          "then": { "required": ["confidence"] }
+        }
+      ]
+    },
+    "door": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "origin", "span", "kind"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "type": { "const": "door" },
+        "origin": { "enum": ["auto", "human"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "span": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "kind": { "enum": ["common", "secret", "opening"] },
+        "wall_id": { "type": "integer", "minimum": 1 },
+        "width_px": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+        "note": { "type": "string", "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "origin": { "const": "auto" } }, "required": ["origin"] },
+          "then": { "required": ["confidence"] }
+        }
+      ]
+    },
+    "area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "origin", "area_kind", "polygon"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "type": { "const": "area" },
+        "origin": { "enum": ["auto", "human"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "area_kind": { "enum": ["water", "lava", "difficult", "unknown"] },
+        "polygon": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "note": { "type": "string", "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "origin": { "const": "auto" } }, "required": ["origin"] },
+          "then": { "required": ["confidence"] }
+        }
+      ]
+    }
+  }
+}
+

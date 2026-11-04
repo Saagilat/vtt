@@ -1,0 +1,104 @@
+{
+  "format": "vtt.annotation",
+  "version": 1,
+  "image": {
+    "file": "crypt-01.png",
+    "width": 840,
+    "height": 840
+  },
+  "grid": {
+    "mode": "square",
+    "origin": { "x": 35, "y": 35 },
+    "rotation_deg": 0,
+    "square": { "side_px": 70 },
+    "unit": "ft",
+    "units_per_cell": 5
+  },
+  "producer": {
+    "kind": "mixed",
+    "engine": "walls-cv2",
+    "engine_version": "0.1",
+    "duration_ms": 8200
+  },
+  "erasure": {
+    "applied": false
+  },
+  "elements": [
+    {
+      "id": 1,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 0.93,
+      "points": [
+        { "x": 36, "y": 36 },
+        { "x": 803, "y": 36 }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 0.91,
+      "points": [
+        { "x": 36, "y": 36 },
+        { "x": 36, "y": 803 }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 0.88,
+      "points": [
+        { "x": 803, "y": 36 },
+        { "x": 803, "y": 803 }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "wall",
+      "origin": "auto",
+      "confidence": 0.9,
+      "points": [
+        { "x": 36, "y": 803 },
+        { "x": 803, "y": 803 }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "door",
+      "origin": "auto",
+      "confidence": 0.44,
+      "span": [
+        { "x": 400, "y": 803 },
+        { "x": 470, "y": 803 }
+      ],
+      "kind": "common",
+      "wall_id": 4,
+      "width_px": 70
+    },
+    {
+      "id": 6,
+      "type": "area",
+      "origin": "auto",
+      "confidence": 0.71,
+      "area_kind": "water",
+      "polygon": [
+        { "x": 100, "y": 100 },
+        { "x": 310, "y": 100 },
+        { "x": 310, "y": 260 },
+        { "x": 100, "y": 260 }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "wall",
+      "origin": "human",
+      "points": [
+        { "x": 36, "y": 600 },
+        { "x": 300, "y": 600 }
+      ],
+      "note": "нашёл сам: перегородка между залом и кладовой"
+    }
+  ]
+}
