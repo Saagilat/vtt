@@ -36,9 +36,9 @@
 частью прототипа и сняты с рабочего дерева (D34). Вернуть в работу:
 
 ```sh
-git show 2c504fb:schema/annotation.v1.schema.json > contract/annotation.v1.schema.json
-git show 2c504fb:schema/annotation.v1.example.json > contract/annotation.v1.example.json
-git show 2c504fb:schema/README.md                 # старый README прототипа, только прочитать
+git show a675e17:schema/annotation.v1.schema.json > contract/annotation.v1.schema.json
+git show a675e17:schema/annotation.v1.example.json > contract/annotation.v1.example.json
+git show a675e17:schema/README.md                 # старый README прототипа, только прочитать
 ```
 
 Возвращать как есть или переписать — решается вместе с разметчиком: у схемы должен появиться

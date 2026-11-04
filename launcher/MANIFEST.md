@@ -12,7 +12,7 @@
 Один файл `latest.json` в ассетах релиза, по одному адресу:
 
 ```
-https://github.com/<владелец>/<репозиторий>/releases/latest/download/latest.json
+https://github.com/Saagilat/vtt/releases/latest/download/latest.json
 ```
 
 Лаунчер делает один GET на старте. Нет сети, 404 или мусор вместо json — молча продолжаем с тем,
