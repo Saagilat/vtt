@@ -7,9 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Ссылки — цель есть, номер из подписи в цели есть
+      - name: Ссылки — цель есть, якорь в цели есть
         run: python3 scripts/check_links.py
-      - name: Номера — определены и не дублируются
-        run: python3 scripts/check_ids.py
-      - name: Markdown — двойные пустые строки, колонки таблиц
+      - name: Markdown — пустые строки, колонки таблиц, длина строк, следы истории и номеров
         run: python3 scripts/lint_md.py

@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
-"""Проверяет ссылки в документации: цель существует, номер из подписи в цели есть.
+"""Проверяет ссылки в документации: цель существует и якорь в цели есть.
 
-С `--fix` сначала перецеливает ссылки вида [ANN-Q1](...) на файл, где номер определён.
+Ссылки бывают двух видов: `[текст](файл.md)` и `[текст](файл.md#заголовок)`. Якорь — это
+заголовок в цели, приведённый к виду GitHub: строчные буквы, без знаков препинания, пробелы
+заменены на дефис, повтор заголовка получает суффикс `-1`, `-2`.
 """
-import argparse
-import os
 import pathlib
 import re
 import sys
+import unicodedata
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-HOME = {
-    'ANN-': 'annotator/DECISIONS.md', 'ANN-Q': 'annotator/QUESTIONS.md',
-    'CLI-': 'client/DECISIONS.md', 'CLI-Q': 'client/QUESTIONS.md',
-    'SRV-': 'server/DECISIONS.md', 'SRV-Q': 'server/QUESTIONS.md',
-    'CTR-': 'contract/DECISIONS.md', 'CTR-Q': 'contract/DECISIONS.md',
-    'LAU-': 'launcher/DECISIONS.md', 'LAU-Q': 'launcher/QUESTIONS.md',
-}
-PREFIXES = ('ANN-Q', 'CLI-Q', 'SRV-Q', 'CTR-Q', 'LAU-Q',
-            'ANN-', 'CLI-', 'SRV-', 'CTR-', 'LAU-')
-LINK = re.compile(r'\[([^\]]+)\]\(([^)#\s]+\.md)\)')
-NUMBER = re.compile(r'\b(?:D\d\d|Q\d{1,2}|(?:ANN|CLI|SRV|CTR|LAU)-Q?\d+)\b')
+LINK = re.compile(r'\[([^\]]+)\]\(([^)\s]+\.md)(?:#([^)\s]+))?\)')
+HEADING = re.compile(r'^(#{1,6})\s+(.*)$')
+CODE = re.compile(r'`([^`]*)`')
 
 
 def documents():
@@ -28,66 +21,60 @@ def documents():
     return [p for p in sorted(ROOT.rglob('*.md')) if '.git' not in p.parts]
 
 
-def home_of(label):
-    """Префикс номера из подписи ссылки, если подпись начинается с номера."""
-    head = label.split('–')[0]
-    for key in PREFIXES:
-        if re.fullmatch(key + r'\d+', head):
-            return key
-    return None
+def slug(text):
+    """Заголовок в том виде, в каком его делает якорь GitHub."""
+    text = CODE.sub(r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    text = text.strip().lower()
+    out = []
+    for ch in text:
+        if ch.isalnum() or ch in '-_':
+            out.append(ch)
+        elif ch.isspace():
+            out.append('-')
+        elif unicodedata.category(ch).startswith('M'):
+            out.append(ch)
+    return ''.join(out)
 
 
-def retarget():
-    """Перецеливает ссылки с номерами на файл проекта. Возвращает число правок."""
-    fixed = 0
-    for path in documents():
-        text = path.read_text(encoding='utf-8')
-
-        def repl(m):
-            nonlocal fixed
-            label, target = m.group(1), m.group(2)
-            key = home_of(label)
-            if key is None:
-                return m.group(0)
-            want = (ROOT / HOME[key]).resolve()
-            if want == (path.parent / target).resolve():
-                return m.group(0)
-            rel = os.path.relpath(want, path.parent)
-            fixed += 1
-            print('  %s: %s -> %s' % (path.relative_to(ROOT), label, rel))
-            return '[%s](%s)' % (label, rel)
-
-        new = LINK.sub(repl, text)
-        if new != text:
-            path.write_text(new, encoding='utf-8')
-    return fixed
+def anchors(path):
+    """Множество якорей, которые есть в файле."""
+    seen = {}
+    result = set()
+    for line in path.read_text(encoding='utf-8').split('\n'):
+        m = HEADING.match(line)
+        if not m:
+            continue
+        base = slug(m.group(2).replace('#', ''))
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        result.add(base if count == 0 else '%s-%d' % (base, count))
+    return result
 
 
 def check():
-    """Список проблем: цели нет на диске или номера из подписи нет в цели."""
+    """Список проблем: нет файла, нет якоря."""
     bad = []
+    cache = {}
     for path in documents():
         text = path.read_text(encoding='utf-8')
         for m in LINK.finditer(text):
-            label, target = m.group(1), m.group(2)
+            target, anchor = m.group(2), m.group(3)
             dest = (path.parent / target).resolve()
+            where = path.relative_to(ROOT)
             if not dest.exists():
-                bad.append('%s: нет файла %s' % (path.relative_to(ROOT), target))
+                bad.append('%s: нет файла %s' % (where, target))
                 continue
-            body = dest.read_text(encoding='utf-8')
-            for number in NUMBER.findall(label):
-                if number not in body:
-                    bad.append('%s: %s отсутствует в %s'
-                               % (path.relative_to(ROOT), number, target))
+            if anchor is None:
+                continue
+            if dest not in cache:
+                cache[dest] = anchors(dest)
+            if anchor not in cache[dest]:
+                bad.append('%s: нет якоря #%s в %s' % (where, anchor, target))
     return bad
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--fix', action='store_true', help='перецелить ссылки перед проверкой')
-    args = parser.parse_args()
-    if args.fix:
-        print('retargeted:', retarget())
     bad = check()
     print('broken:', len(bad))
     for item in bad:
