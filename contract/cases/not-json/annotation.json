@@ -1,0 +1,5 @@
+{
+  "format_version": 1,
+  "image": {"width": 2048, "height": 2048},
+  "grid": {"mode": "square", "origin": [38, 39], "square": {"side_px": 70},
+}

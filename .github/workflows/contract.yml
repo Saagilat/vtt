@@ -1,0 +1,33 @@
+name: contract
+
+# CI по путям (docs/07-projects.md, §3, правило 4): правка в contract/ запускает только его.
+on:
+  push:
+    paths:
+      - 'contract/**'
+      - 'scripts/validate_annotation.py'
+      - 'scripts/check_limits.py'
+      - '.github/workflows/contract.yml'
+  pull_request:
+    paths:
+      - 'contract/**'
+      - 'scripts/validate_annotation.py'
+      - 'scripts/check_limits.py'
+      - '.github/workflows/contract.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Библиотека схемы — версия прибита
+        run: pip install 'jsonschema==4.*'
+      - name: Пример из FORMAT.md — годен
+        run: python3 scripts/validate_annotation.py contract/annotation.v1.example.json
+      - name: Набор плохих случаев — по одному нарушению на файл
+        run: python3 scripts/validate_annotation.py --cases contract/cases
+      - name: Пределы — ровно предел проходит, на один больше нет
+        run: python3 scripts/check_limits.py

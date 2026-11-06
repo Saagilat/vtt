@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "point_outside_image",
+  "what": "x = width: пикселя с таким номером уже нет, граница не входит"
+}

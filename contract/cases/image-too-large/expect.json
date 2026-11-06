@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "image_too_large",
+  "what": "картинка выше потолка 8192 по стороне"
+}

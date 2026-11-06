@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "image": {
+    "width": 2048,
+    "height": 2048
+  },
+  "grid": {
+    "mode": "none",
+    "unit": "ft",
+    "units_per_cell": 5
+  },
+  "walls": [],
+  "doors": [],
+  "areas": []
+}

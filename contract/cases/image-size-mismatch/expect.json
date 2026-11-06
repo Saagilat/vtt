@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "image_size_mismatch",
+  "what": "в файле 2048×2048, а прислали 1024×1024"
+}

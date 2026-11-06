@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "polygon_not_closed",
+  "what": "пять разных точек, первая в конце не повторена"
+}

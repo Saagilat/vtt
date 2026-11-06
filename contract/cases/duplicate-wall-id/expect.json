@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "duplicate_id",
+  "what": "два элемента одной коллекции с одним id"
+}

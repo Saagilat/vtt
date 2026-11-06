@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "non_finite_number",
+  "what": "в JSON приехало NaN: такое значение ломает любой расчёт"
+}

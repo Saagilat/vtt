@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "zero_length_segment",
+  "what": "у стены две соседние точки совпали"
+}

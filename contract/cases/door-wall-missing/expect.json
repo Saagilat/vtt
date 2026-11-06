@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "door_wall_missing",
+  "what": "wall_id указывает на стену, которой нет в файле"
+}

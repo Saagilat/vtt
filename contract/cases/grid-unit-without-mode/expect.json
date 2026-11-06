@@ -1,0 +1,5 @@
+{
+  "verdict": "error",
+  "code": "schema",
+  "what": "при mode none клетка не имеет размера, поэтому пары unit/units_per_cell быть не должно"
+}

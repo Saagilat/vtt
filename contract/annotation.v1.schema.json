@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Разметка карты, версия 1",
+  "description": "Машинная форма договора из FORMAT.md. Схема держит форму: поля, типы, обязательность, закрытые списки, запреты по режиму сетки и пределы. Чего схема выразить не может — уникальность id, попадание в картинку, совпадение размера и хеша с присланной картинкой, дверь на своей стене, замкнутость полигона, — проверяет scripts/validate_annotation.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "image", "grid", "walls", "doors", "areas"],
+  "properties": {
+    "format_version": { "const": 1, "type": "integer" },
+    "image": { "$ref": "#/$defs/image" },
+    "grid": { "$ref": "#/$defs/grid" },
+    "walls": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": { "$ref": "#/$defs/wall" }
+    },
+    "doors": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/door" }
+    },
+    "areas": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/area" }
+    }
+  },
+  "$defs": {
+    "point": {
+      "description": "Пара целых координат в пикселях картинки. Верхняя граница зависит от размера картинки и проверяется кодом: 0 <= x < width.",
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "items": false,
+      "minItems": 2
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "grid": {
+      "description": "Сетка — правило стола, а не свойство картинки. Режим задаёт, какие блоки и поля допустимы.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "dependentRequired": {
+        "unit": ["units_per_cell"],
+        "units_per_cell": ["unit"]
+      },
+      "properties": {
+        "mode": { "enum": ["none", "square", "hex"] },
+        "origin": { "$ref": "#/$defs/point" },
+        "rotation_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        "square": { "$ref": "#/$defs/square" },
+        "hex": { "$ref": "#/$defs/hex" },
+        "unit": { "enum": ["ft", "m", "mi"] },
+        "units_per_cell": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["mode"], "properties": { "mode": { "const": "none" } } },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["origin"] },
+                { "required": ["rotation_deg"] },
+                { "required": ["square"] },
+                { "required": ["hex"] },
+                { "required": ["unit"] },
+                { "required": ["units_per_cell"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "required": ["mode"], "properties": { "mode": { "const": "square" } } },
+          "then": { "required": ["origin", "square"], "not": { "required": ["hex"] } }
+        },
+        {
+          "if": { "required": ["mode"], "properties": { "mode": { "const": "hex" } } },
+          "then": { "required": ["origin", "hex"], "not": { "required": ["square"] } }
+        }
+      ]
+    },
+    "square": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["side_px"],
+      "properties": {
+        "side_px": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "hex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["radius_px", "orientation", "stagger"],
+      "properties": {
+        "radius_px": { "type": "number", "exclusiveMinimum": 0 },
+        "orientation": { "enum": ["pointy", "flat"] },
+        "stagger": { "enum": ["odd", "even"] }
+      }
+    },
+    "wall_id": { "type": "string", "pattern": "^w[1-9][0-9]{0,5}$" },
+    "door_id": { "type": "string", "pattern": "^d[1-9][0-9]{0,5}$" },
+    "area_id": { "type": "string", "pattern": "^a[1-9][0-9]{0,5}$" },
+    "wall": {
+      "description": "Ломаная: точки соединены по порядку. Прямая стена — две точки, угол — три.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "points"],
+      "properties": {
+        "id": { "$ref": "#/$defs/wall_id" },
+        "points": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/point" }
+        }
+      }
+    },
+    "door": {
+      "description": "Проём — отрезок from -> to. Отдельного поля ширины нет: ширина и есть длина отрезка. wall_id необязателен: проём бывает и там, где стены в файле нет.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/door_id" },
+        "wall_id": { "$ref": "#/$defs/wall_id" },
+        "from": { "$ref": "#/$defs/point" },
+        "to": { "$ref": "#/$defs/point" },
+        "type": { "enum": ["normal", "secret", "opening", "unknown"] }
+      }
+    },
+    "area": {
+      "description": "Замкнутый участок с типом. Полигон замкнут явно: последняя пара повторяет первую, поэтому минимум четыре пары.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "polygon"],
+      "properties": {
+        "id": { "$ref": "#/$defs/area_id" },
+        "type": { "enum": ["water", "lava", "difficult", "unknown"] },
+        "polygon": {
+          "type": "array",
+          "minItems": 4,
+          "items": { "$ref": "#/$defs/point" }
+        }
+      }
+    }
+  }
+}
