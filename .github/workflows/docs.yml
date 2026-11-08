@@ -11,3 +11,5 @@ jobs:
         run: python3 scripts/check_links.py
       - name: Markdown — пустые строки, колонки таблиц, длина строк, следы истории и номеров
         run: python3 scripts/lint_md.py
+      - name: Границы проектов — импорты, манифесты, список папок
+        run: python3 scripts/check_boundaries.py

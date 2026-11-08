@@ -1,18 +1,21 @@
 name: contract
 
-# CI по путям (docs/07-projects.md, §3, правило 4): правка в contract/ запускает только его.
+# CI по путям (docs/projects.md, правило 4): правка в contract/ запускает только его
+# и проверку того, что контракт меняется с версией (правило 5).
 on:
   push:
     paths:
       - 'contract/**'
       - 'scripts/validate_annotation.py'
       - 'scripts/check_limits.py'
+      - 'scripts/check_contract_version.py'
       - '.github/workflows/contract.yml'
   pull_request:
     paths:
       - 'contract/**'
       - 'scripts/validate_annotation.py'
       - 'scripts/check_limits.py'
+      - 'scripts/check_contract_version.py'
       - '.github/workflows/contract.yml'
 
 jobs:
@@ -20,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # версия контракта сверяется с историей, а не только с текущим деревом
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -31,3 +36,8 @@ jobs:
         run: python3 scripts/validate_annotation.py --cases contract/cases
       - name: Пределы — ровно предел проходит, на один больше нет
         run: python3 scripts/check_limits.py
+      - name: Версия и журнал — правка контракта приносит строку в CHANGELOG
+        run: >-
+          python3 scripts/check_contract_version.py
+          --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+
