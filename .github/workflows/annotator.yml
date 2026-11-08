@@ -28,7 +28,7 @@ jobs:
         run: pip install 'jsonschema==4.*'
       - name: Манифест и команда из него — vtt-annotate
         run: |
-          python3 -m pip install --no-deps annotator
+          python3 -m pip install --no-deps ./annotator
           vtt-annotate --version
       - name: Командная строка — флаги, режимы и коды возврата
         run: python3 -m unittest discover -s annotator/tests -v
