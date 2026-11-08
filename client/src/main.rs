@@ -16,7 +16,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, Deserialize)]
 struct Account {
-    #[allow(dead_code)]
     id: String,
     login: String,
 }
@@ -34,9 +33,33 @@ struct Campaign {
     role: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct Member {
+    id: String,
+    login: String,
+    role: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CampaignDetail {
+    #[allow(dead_code)]
+    id: String,
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    role: String,
+    members: Vec<Member>,
+}
+
+#[derive(Deserialize)]
+struct Invite {
+    code: String,
+    #[allow(dead_code)]
+    expires_at: String,
+}
+
 #[derive(Deserialize)]
 struct Me {
-    #[allow(dead_code)]
     account: Account,
     campaigns: Vec<Campaign>,
 }
@@ -74,10 +97,17 @@ enum ChatEvent {
     Tokens(Vec<Token>),
     TokenPlaced(Token),
     TokenMoved(Token),
+    TokenUpdated(Token),
     SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
     Doors(HashMap<String, bool>),
     DoorSet(String, bool),
+    Roll(String),
+    Turn(Option<String>, u32),
     Error(String),
+}
+
+fn default_hp() -> i32 {
+    10
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,6 +119,16 @@ struct Token {
     y: f64,
     #[serde(default)]
     color: String,
+    #[serde(default)]
+    owner_id: String,
+    #[serde(default)]
+    owner_login: String,
+    #[serde(default = "default_hp")]
+    hp: i32,
+    #[serde(default = "default_hp")]
+    hp_max: i32,
+    #[serde(default)]
+    initiative: i32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -123,6 +163,7 @@ struct App {
     account: Option<Account>,
     campaigns: Vec<Campaign>,
     campaign: Option<Campaign>,
+    campaign_detail: Option<CampaignDetail>,
     scenes: Vec<SceneSummary>,
     scene: Option<Scene>,
     texture: Option<egui::TextureHandle>,
@@ -135,12 +176,18 @@ struct App {
     image_path: String,
     annotation_path: String,
     scene_name: String,
+    join_code: String,
+    invite_code: String,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
     chat_lines: Vec<String>,
     chat_status: String,
     tokens: Vec<Token>,
     token_name: String,
+    token_owner: String,
+    roll_formula: String,
+    turn_token: Option<String>,
+    round: u32,
     drag_token: Option<String>,
     doors: HashMap<String, bool>,
     #[allow(dead_code)]
@@ -162,6 +209,7 @@ impl App {
             account: None,
             campaigns: Vec::new(),
             campaign: None,
+            campaign_detail: None,
             scenes: Vec::new(),
             scene: None,
             texture: None,
@@ -174,12 +222,18 @@ impl App {
             image_path: String::new(),
             annotation_path: String::new(),
             scene_name: "Сцена".to_string(),
+            join_code: String::new(),
+            invite_code: String::new(),
             chat_rx: None,
             chat_input: String::new(),
             chat_lines: Vec::new(),
             chat_status: String::new(),
             tokens: Vec::new(),
             token_name: "Фишка".to_string(),
+            token_owner: String::new(),
+            roll_formula: "1d20".to_string(),
+            turn_token: None,
+            round: 0,
             drag_token: None,
             doors: HashMap::new(),
             install_dir,
@@ -303,6 +357,7 @@ impl App {
 
     fn load_campaigns(&mut self) -> Result<(), String> {
         let me: Me = self.get_json("/v1/me")?;
+        self.account = Some(me.account);
         self.campaigns = me.campaigns;
         self.screen = Screen::Campaigns;
         Ok(())
@@ -310,10 +365,16 @@ impl App {
 
     fn open_campaign(&mut self, campaign: Campaign) {
         self.campaign = Some(campaign.clone());
+        self.campaign_detail = None;
         self.scenes.clear();
         self.scene = None;
         self.texture = None;
         self.pending_image = None;
+        self.invite_code.clear();
+        match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
+            Ok(detail) => self.campaign_detail = Some(detail),
+            Err(error) => self.error = error,
+        }
         match self.get_json::<Value>(&format!("/v1/campaigns/{}/scenes", campaign.id)) {
             Ok(value) => {
                 let items = value
@@ -326,6 +387,46 @@ impl App {
                         self.screen = Screen::Scenes;
                     }
                     Err(error) => self.error = error.to_string(),
+                }
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn create_invite(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.post_json::<Invite>(
+            &format!("/v1/campaigns/{}/invites", campaign.id),
+            serde_json::json!({"code": true}),
+        ) {
+            Ok(invite) => {
+                self.invite_code = invite.code.clone();
+                self.notice = format!(
+                    "код приглашения: {}. Передайте его игроку, он действует сутки",
+                    invite.code
+                );
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn accept_invite(&mut self) {
+        let code = self.join_code.trim().to_uppercase();
+        if code.is_empty() {
+            self.error = "введите код приглашения".to_string();
+            return;
+        }
+        match self
+            .post_json::<Campaign>(&format!("/v1/invites/{code}/accept"), serde_json::json!({}))
+        {
+            Ok(campaign) => {
+                self.join_code.clear();
+                self.notice = format!("вы в кампании «{}»", campaign.name);
+                if let Err(error) = self.load_campaigns() {
+                    self.error = error;
                 }
             }
             Err(error) => self.error = error,
@@ -467,6 +568,15 @@ impl App {
                 self.open_campaign(campaign);
             }
         }
+        ui.separator();
+        ui.heading("Войти по коду");
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.join_code);
+            if ui.button("Войти").clicked() {
+                self.accept_invite();
+            }
+        });
+        ui.label("код выдаёт мастер кампании");
     }
 
     fn show_scenes(&mut self, ui: &mut egui::Ui) {
@@ -475,6 +585,21 @@ impl App {
         }
         if let Some(campaign) = &self.campaign {
             ui.heading(&campaign.name);
+            if campaign.role == "owner" {
+                if ui.button("Пригласить игрока").clicked() {
+                    self.create_invite();
+                }
+                if !self.invite_code.is_empty() {
+                    ui.label(format!("код: {}", self.invite_code));
+                }
+            }
+        }
+        if let Some(detail) = &self.campaign_detail {
+            ui.label("участники:");
+            for member in &detail.members {
+                ui.label(format!("  {} — {}", member.login, member.role));
+            }
+            ui.separator();
         }
         if self.scenes.is_empty() {
             ui.label("сцен нет: импортируйте карту через API");
@@ -578,7 +703,7 @@ impl App {
                             origin.x + token.x as f32 * self.zoom,
                             origin.y + token.y as f32 * self.zoom,
                         );
-                        center.distance(position) <= 16.0
+                        center.distance(position) <= 16.0 && self.can_move_token(token)
                     })
                     .map(|token| token.id.clone());
             }
@@ -841,6 +966,8 @@ impl App {
         self.chat_lines.clear();
         self.tokens.clear();
         self.doors.clear();
+        self.turn_token = None;
+        self.round = 0;
         self.drag_token = None;
         self.chat_status = "подключение…".to_string();
         let (token, url) = match (&self.token, self.ws_url(campaign_id, scene_id)) {
@@ -895,6 +1022,14 @@ impl App {
                                         .collect();
                                     let _ = sender.send(ChatEvent::Doors(doors));
                                 }
+                                if let Some(turn) = value["state"]["turn"].as_object() {
+                                    let token_id = turn["token_id"]
+                                        .as_str()
+                                        .filter(|id| !id.is_empty())
+                                        .map(str::to_string);
+                                    let round = turn["round"].as_u64().unwrap_or(0) as u32;
+                                    let _ = sender.send(ChatEvent::Turn(token_id, round));
+                                }
                             }
                             Some("chat.said") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
@@ -944,6 +1079,40 @@ impl App {
                                 {
                                     let _ = sender.send(ChatEvent::TokenMoved(token));
                                 }
+                            }
+                            Some("token.updated") => {
+                                if let Ok(token) =
+                                    serde_json::from_value::<Token>(value["token"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::TokenUpdated(token));
+                                }
+                            }
+                            Some("roll") => {
+                                let actor = value["actor"]["login"].as_str().unwrap_or("?");
+                                let formula = value["formula"].as_str().unwrap_or("?");
+                                let total = value["total"].as_i64().unwrap_or(0);
+                                let values = value["values"]
+                                    .as_array()
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter_map(|item| item.as_i64())
+                                            .map(|item| item.to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    })
+                                    .unwrap_or_default();
+                                let _ = sender.send(ChatEvent::Roll(format!(
+                                    "🎲 {actor}: {formula} = {total}  [{values}]"
+                                )));
+                            }
+                            Some("turn.set") => {
+                                let token_id = value["token_id"]
+                                    .as_str()
+                                    .filter(|id| !id.is_empty())
+                                    .map(str::to_string);
+                                let round = value["round"].as_u64().unwrap_or(0) as u32;
+                                let _ = sender.send(ChatEvent::Turn(token_id, round));
                             }
                             Some("door.set") => {
                                 if let (Some(door_id), Some(open)) =
@@ -1003,9 +1172,21 @@ impl App {
                         *item = token;
                     }
                 }
+                ChatEvent::TokenUpdated(token) => {
+                    if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
+                        *item = token;
+                    }
+                }
+                ChatEvent::Roll(line) => self.chat_lines.push(line),
+                ChatEvent::Turn(token_id, round) => {
+                    self.turn_token = token_id;
+                    self.round = round;
+                }
                 ChatEvent::SceneShown(scene, tokens, doors) => {
                     if self.load_scene(&scene, Some(tokens)) {
                         self.doors = doors;
+                        self.turn_token = None;
+                        self.round = 0;
                         for item in &mut self.scenes {
                             item.active = item.id == scene.id;
                         }
@@ -1025,6 +1206,23 @@ impl App {
             .as_ref()
             .map(|scene| scene.id.clone())
             .unwrap_or_default()
+    }
+
+    fn is_master(&self) -> bool {
+        self.campaign
+            .as_ref()
+            .map(|campaign| campaign.role == "owner" || campaign.role == "master")
+            .unwrap_or(false)
+    }
+
+    fn can_move_token(&self, token: &Token) -> bool {
+        if self.is_master() {
+            return true;
+        }
+        self.account
+            .as_ref()
+            .map(|account| !token.owner_id.is_empty() && token.owner_id == account.id)
+            .unwrap_or(false)
     }
 
     fn send_intent(&self, payload: Value) {
@@ -1078,12 +1276,42 @@ impl App {
             scene.image.width as f64 / 2.0,
             scene.image.height as f64 / 2.0,
         );
-        self.send_intent(serde_json::json!({
+        let mut payload = serde_json::json!({
             "type": "token.place",
             "name": if name.is_empty() { "Фишка" } else { name.as_str() },
             "x": x,
             "y": y,
+        });
+        if !self.token_owner.is_empty() {
+            payload["owner_id"] = Value::String(self.token_owner.clone());
+        }
+        self.send_intent(payload);
+    }
+
+    fn update_token(&mut self, token_id: &str, hp: i32, hp_max: i32, initiative: i32) {
+        self.send_intent(serde_json::json!({
+            "type": "token.update",
+            "token_id": token_id,
+            "hp": hp,
+            "hp_max": hp_max,
+            "initiative": initiative,
         }));
+    }
+
+    fn roll_dice(&mut self) {
+        let formula = self.roll_formula.trim().to_string();
+        if formula.is_empty() {
+            return;
+        }
+        self.send_intent(serde_json::json!({
+            "type": "roll",
+            "formula": formula,
+            "visibility": "table",
+        }));
+    }
+
+    fn next_turn(&mut self) {
+        self.send_intent(serde_json::json!({"type": "turn.next"}));
     }
 
     fn move_token(&self, token_id: &str, x: f64, y: f64) {
@@ -1102,6 +1330,7 @@ impl App {
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .auto_shrink([false, false])
+            .max_height(180.0)
             .show(ui, |ui| {
                 for line in &self.chat_lines {
                     ui.label(line);
@@ -1116,11 +1345,45 @@ impl App {
                 self.chat_send();
             }
         });
+        ui.separator();
+        ui.heading("Кубы");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.roll_formula).desired_width(90.0));
+            if ui.button("Бросить").clicked() {
+                self.roll_dice();
+            }
+            if ui.button("d20").clicked() {
+                self.roll_formula = "1d20".to_string();
+                self.roll_dice();
+            }
+        });
         if let Some(campaign) = &self.campaign {
             if campaign.role == "owner" || campaign.role == "master" {
                 ui.separator();
                 ui.heading("Фишки");
                 ui.text_edit_singleline(&mut self.token_name);
+                let members = self
+                    .campaign_detail
+                    .as_ref()
+                    .map(|detail| detail.members.clone())
+                    .unwrap_or_default();
+                let selected = members
+                    .iter()
+                    .find(|member| member.id == self.token_owner)
+                    .map(|member| member.login.clone())
+                    .unwrap_or_else(|| "я (мастер)".to_string());
+                egui::ComboBox::from_label("владелец")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.token_owner, String::new(), "я (мастер)");
+                        for member in &members {
+                            ui.selectable_value(
+                                &mut self.token_owner,
+                                member.id.clone(),
+                                format!("{} ({})", member.login, member.role),
+                            );
+                        }
+                    });
                 if ui.button("+ в центр сцены").clicked() {
                     self.place_token();
                 }
@@ -1156,6 +1419,75 @@ impl App {
                         }));
                     }
                 }
+            }
+        }
+        ui.separator();
+        if self.round > 0 {
+            ui.heading(format!("Бой · круг {}", self.round));
+        } else {
+            ui.heading("Бой");
+        }
+        let mut ordered = self.tokens.clone();
+        ordered.sort_by(|a, b| {
+            b.initiative
+                .cmp(&a.initiative)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        if ordered.is_empty() {
+            ui.label("на сцене нет фишек");
+        }
+        let mut changed = None;
+        for token in &ordered {
+            let editable = self.can_move_token(token);
+            let current = self.turn_token.as_deref() == Some(token.id.as_str());
+            ui.horizontal(|ui| {
+                if current {
+                    ui.strong("▶");
+                }
+                ui.label(format!(
+                    "{}  иниц. {}  HP {}/{}",
+                    token.name, token.initiative, token.hp, token.hp_max
+                ));
+                if !token.owner_login.is_empty() {
+                    ui.weak(&token.owner_login);
+                }
+            });
+            if editable {
+                let mut hp = token.hp;
+                let mut hp_max = token.hp_max.max(1);
+                let mut initiative = token.initiative;
+                let mut touched = false;
+                ui.horizontal(|ui| {
+                    touched |= ui
+                        .add(egui::DragValue::new(&mut hp).range(0..=hp_max))
+                        .changed();
+                    touched |= ui
+                        .add(egui::DragValue::new(&mut hp_max).range(1..=9999))
+                        .changed();
+                    touched |= ui
+                        .add(
+                            egui::DragValue::new(&mut initiative)
+                                .range(-100..=1000)
+                                .prefix("иниц. "),
+                        )
+                        .changed();
+                });
+                if touched {
+                    changed = Some((token.id.clone(), hp, hp_max, initiative));
+                }
+            }
+        }
+        if let Some((id, hp, hp_max, initiative)) = changed {
+            self.update_token(&id, hp, hp_max, initiative);
+        }
+        if self.is_master() {
+            let label = if self.round == 0 {
+                "Начать бой"
+            } else {
+                "Следующий ход"
+            };
+            if ui.button(label).clicked() {
+                self.next_turn();
             }
         }
     }
@@ -1202,8 +1534,10 @@ impl eframe::App for App {
         if self.screen == Screen::Scene {
             egui::Panel::right("chat")
                 .resizable(true)
-                .default_size(280.0)
-                .show(ui, |ui| self.show_chat(ui));
+                .default_size(340.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.show_chat(ui));
+                });
         }
         egui::CentralPanel::default().show(ui, |ui| match self.screen {
             Screen::Login => self.show_login(ui),
@@ -1278,5 +1612,17 @@ mod tests {
         assert!(text.contains("Пещера"));
         assert!(text.contains("image-bytes"));
         assert!(text.ends_with("--\r\n"));
+    }
+
+    #[test]
+    fn token_without_stats_gets_defaults() {
+        let token: Token = serde_json::from_str(
+            r##"{"id":"t1","scene_id":"s1","name":"Старая","x":1,"y":2,"color":"#e8c547"}"##,
+        )
+        .expect("старая фишка");
+        assert_eq!(token.hp, 10);
+        assert_eq!(token.hp_max, 10);
+        assert_eq!(token.initiative, 0);
+        assert!(token.owner_login.is_empty());
     }
 }

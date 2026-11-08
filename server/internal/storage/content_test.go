@@ -383,3 +383,239 @@ func TestTableChat(t *testing.T) {
 		t.Fatalf("фишка не переехала на новую сцену: %+v", reply)
 	}
 }
+
+func TestInviteJoinByCode(t *testing.T) {
+	handler, db, account := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	if _, err := db.CreateAccount("bob", "пароль"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateAccount("carol", "пароль"); err != nil {
+		t.Fatal(err)
+	}
+
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Вечер"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+
+	inviteRequest := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/invites", nil)
+	inviteRequest.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, inviteRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("приглашение: %d %s", rec.Code, rec.Body)
+	}
+	var invite api.Invite
+	if err := json.Unmarshal(rec.Body.Bytes(), &invite); err != nil {
+		t.Fatal(err)
+	}
+	if len(invite.Code) < 6 {
+		t.Fatalf("короткий код: %q", invite.Code)
+	}
+
+	bobToken := login(t, handler, "bob", "пароль")
+	accept := httptest.NewRequest("POST", "/v1/invites/"+invite.Code+"/accept", nil)
+	accept.Header.Set("Authorization", "Bearer "+bobToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, accept)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("вступление: %d %s", rec.Code, rec.Body)
+	}
+	var joined api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &joined); err != nil {
+		t.Fatal(err)
+	}
+	if joined.ID != campaign.ID || joined.Role != api.RolePlayer {
+		t.Fatalf("вступил не туда: %+v", joined)
+	}
+
+	// Повтор того же человека идемпотентен, чужой — уже использованный код.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, accept)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("повторное вступление: %d %s", rec.Code, rec.Body)
+	}
+	carolToken := login(t, handler, "carol", "пароль")
+	carolAccept := httptest.NewRequest("POST", "/v1/invites/"+invite.Code+"/accept", nil)
+	carolAccept.Header.Set("Authorization", "Bearer "+carolToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, carolAccept)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("чужой код: %d %s", rec.Code, rec.Body)
+	}
+
+	expired, err := db.CreateInvite(campaign.ID, account.ID,
+		time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredRequest := httptest.NewRequest("POST", "/v1/invites/"+expired.Code+"/accept", nil)
+	expiredRequest.Header.Set("Authorization", "Bearer "+carolToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, expiredRequest)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("истёкший код: %d %s", rec.Code, rec.Body)
+	}
+
+	// Код создаёт только владелец.
+	bobMembership := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/invites", nil)
+	bobMembership.Header.Set("Authorization", "Bearer "+bobToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, bobMembership)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("код игроком: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestTablePlayerTokenRollAndTurn(t *testing.T) {
+	handler, db, _ := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Бой"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-play")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene, err := db.CreateScene(campaign.ID, image.ID, "Арена", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"/v1/campaigns/" + campaign.ID + "/table?scene_id=" + scene.ID
+	dial := func(token string) *websocket.Conn {
+		conn, _, err := websocket.DefaultDialer.Dial(url,
+			http.Header{"Authorization": []string{"Bearer " + token}})
+		if err != nil {
+			t.Fatalf("websocket: %v", err)
+		}
+		var hello map[string]any
+		if err := conn.ReadJSON(&hello); err != nil {
+			t.Fatalf("hello: %v", err)
+		}
+		return conn
+	}
+	read := func(conn *websocket.Conn, kind string) map[string]any {
+		var reply map[string]any
+		if err := conn.ReadJSON(&reply); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		if reply["type"] != kind {
+			t.Fatalf("%s: получили %+v", kind, reply)
+		}
+		return reply
+	}
+
+	master := dial(alice)
+	if err := master.WriteJSON(map[string]any{
+		"type": "token.place", "name": "Боб", "owner_id": bob.ID,
+		"x": 10, "y": 10, "intent_id": "p1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	placed := read(master, "token.placed")
+	bobTokenID, _ := placed["token"].(map[string]any)["id"].(string)
+	if bobTokenID == "" || placed["token"].(map[string]any)["owner_login"] != "bob" {
+		t.Fatalf("фишка без владельца: %+v", placed)
+	}
+	master.Close()
+
+	player := dial(login(t, handler, "bob", "пароль"))
+	if err := player.WriteJSON(map[string]any{
+		"type": "token.move", "token_id": bobTokenID, "x": 30, "y": 40, "intent_id": "p2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	moved := read(player, "token.moved")
+	if moved["token"].(map[string]any)["x"] != float64(30) {
+		t.Fatalf("фишка не сдвинулась: %+v", moved)
+	}
+
+	if err := player.WriteJSON(map[string]any{
+		"type": "token.update", "token_id": bobTokenID,
+		"hp": 5, "hp_max": 12, "initiative": 15, "intent_id": "p3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated := read(player, "token.updated")["token"].(map[string]any)
+	if updated["hp"] != float64(5) || updated["hp_max"] != float64(12) ||
+		updated["initiative"] != float64(15) {
+		t.Fatalf("характеристики не сохранились: %+v", updated)
+	}
+
+	if err := player.WriteJSON(map[string]any{
+		"type": "roll", "formula": "2d6+3", "intent_id": "p4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	roll := read(player, "roll")
+	values, _ := roll["values"].([]any)
+	if len(values) != 2 || roll["visibility"] != "table" {
+		t.Fatalf("бросок: %+v", roll)
+	}
+
+	if err := player.WriteJSON(map[string]any{
+		"type": "token.place", "name": "Самозванец", "x": 1, "y": 1, "intent_id": "p5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	denied := read(player, "error")
+	if denied["error"].(map[string]any)["code"] != "forbidden" {
+		t.Fatalf("фишку поставил игрок: %+v", denied)
+	}
+	player.Close()
+
+	master = dial(alice)
+	if err := master.WriteJSON(map[string]any{
+		"type": "token.place", "name": "Алиса", "x": 20, "y": 20, "intent_id": "p6",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aliceTokenID, _ := read(master, "token.placed")["token"].(map[string]any)["id"].(string)
+	if err := master.WriteJSON(map[string]any{
+		"type": "token.update", "token_id": aliceTokenID, "initiative": 5, "intent_id": "p7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read(master, "token.updated")
+
+	for _, want := range []struct {
+		tokenID string
+		round   float64
+	}{{bobTokenID, 1}, {aliceTokenID, 1}, {bobTokenID, 2}} {
+		if err := master.WriteJSON(map[string]any{
+			"type": "turn.next", "intent_id": "turn",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		turn := read(master, "turn.set")
+		if turn["token_id"] != want.tokenID || turn["round"] != want.round {
+			t.Fatalf("ход: %+v, ждали %+v", turn, want)
+		}
+	}
+	if tokenID, round := db.Turn(campaign.ID); tokenID != bobTokenID || round != 2 {
+		t.Fatalf("ход не сохранён: %q, %d", tokenID, round)
+	}
+	master.Close()
+}

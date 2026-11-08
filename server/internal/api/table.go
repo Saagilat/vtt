@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,9 +18,14 @@ type tableHub struct {
 	rooms map[string]*tableRoom
 }
 
+type tableClient struct {
+	account Account
+	role    string
+}
+
 type tableRoom struct {
 	mu      sync.Mutex
-	clients map[*websocket.Conn]bool
+	clients map[*websocket.Conn]tableClient
 	seq     int64
 	sceneID string
 }
@@ -33,7 +39,7 @@ func (h *tableHub) room(id string) *tableRoom {
 	defer h.mu.Unlock()
 	room, ok := h.rooms[id]
 	if !ok {
-		room = &tableRoom{clients: map[*websocket.Conn]bool{}}
+		room = &tableRoom{clients: map[*websocket.Conn]tableClient{}}
 		h.rooms[id] = room
 	}
 	return room
@@ -46,17 +52,23 @@ var tableUpgrader = websocket.Upgrader{
 }
 
 type tableMessage struct {
-	Type     string  `json:"type"`
-	Text     string  `json:"text,omitempty"`
-	Channel  string  `json:"channel,omitempty"`
-	IntentID string  `json:"intent_id,omitempty"`
-	TokenID  string  `json:"token_id,omitempty"`
-	SceneID  string  `json:"scene_id,omitempty"`
-	DoorID   string  `json:"door_id,omitempty"`
-	Name     string  `json:"name,omitempty"`
-	Open     bool    `json:"open,omitempty"`
-	X        float64 `json:"x,omitempty"`
-	Y        float64 `json:"y,omitempty"`
+	Type       string  `json:"type"`
+	Text       string  `json:"text,omitempty"`
+	Channel    string  `json:"channel,omitempty"`
+	IntentID   string  `json:"intent_id,omitempty"`
+	TokenID    string  `json:"token_id,omitempty"`
+	SceneID    string  `json:"scene_id,omitempty"`
+	DoorID     string  `json:"door_id,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	OwnerID    string  `json:"owner_id,omitempty"`
+	Open       bool    `json:"open,omitempty"`
+	X          float64 `json:"x,omitempty"`
+	Y          float64 `json:"y,omitempty"`
+	HP         *int    `json:"hp,omitempty"`
+	HPMax      *int    `json:"hp_max,omitempty"`
+	Initiative *int    `json:"initiative,omitempty"`
+	Formula    string  `json:"formula,omitempty"`
+	Visibility string  `json:"visibility,omitempty"`
 }
 
 func (r *tableRoom) send(conn *websocket.Conn, value any) error {
@@ -70,6 +82,18 @@ func (r *tableRoom) broadcast(value any) {
 	defer r.mu.Unlock()
 	for client := range r.clients {
 		_ = client.WriteJSON(value)
+	}
+}
+
+// broadcastIf рассылает событие только тем, кому оно адресовано: скрытый
+// бросок не должен уходить всему столу.
+func (r *tableRoom) broadcastIf(value any, allow func(tableClient) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for client, who := range r.clients {
+		if allow(who) {
+			_ = client.WriteJSON(value)
+		}
 	}
 }
 
@@ -148,10 +172,11 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	if sceneID != "" {
 		tokens = s.content.Tokens(campaign.ID, sceneID)
 	}
-	actions := []string{"chat.say", "token.move"}
+	actions := []string{"chat.say", "token.move", "token.update", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set")
+		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next")
 	}
+	turnToken, turnRound := s.content.Turn(campaign.ID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -170,11 +195,15 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			"scene_id": sceneID,
 			"tokens":   tokens,
 			"doors":    s.content.Doors(campaign.ID, sceneID),
+			"turn": map[string]any{
+				"token_id": turnToken,
+				"round":    turnRound,
+			},
 		},
 		"actions": actions,
 	}
 	room.mu.Lock()
-	room.clients[conn] = true
+	room.clients[conn] = tableClient{account: account, role: campaign.Role}
 	err = conn.WriteJSON(hello)
 	room.mu.Unlock()
 	if err != nil {
@@ -218,6 +247,49 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"channel": channel,
 				"actor":   account,
 			})
+		case "roll":
+			result, err := parseRoll(message.Formula)
+			if err != nil {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": err.Error()},
+				})
+				continue
+			}
+			visibility := message.Visibility
+			if visibility == "" {
+				visibility = "table"
+			}
+			if visibility != "table" && visibility != "self" && visibility != "master" {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "незнакомая видимость броска"},
+				})
+				continue
+			}
+			event := map[string]any{
+				"type":       "roll",
+				"seq":        room.nextSeq(),
+				"time":       s.now().UTC().Format(time.RFC3339),
+				"formula":    result.Formula,
+				"values":     result.Values,
+				"modifier":   result.Modifier,
+				"total":      result.Total,
+				"visibility": visibility,
+				"actor":      account,
+			}
+			switch visibility {
+			case "self":
+				_ = room.send(conn, event)
+			case "master":
+				room.broadcastIf(event, func(who tableClient) bool {
+					return master(who.role) || who.account.ID == account.ID
+				})
+			default:
+				room.broadcast(event)
+			}
 		case "scene.show":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{
@@ -245,6 +317,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			s.content.SetActiveScene(campaign.ID, shown.ID)
+			s.content.SetTurn(campaign.ID, "", 0)
 			room.setScene(shown.ID)
 			room.broadcast(map[string]any{
 				"type":   "scene.shown",
@@ -253,6 +326,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"scene":  shown,
 				"tokens": s.content.Tokens(campaign.ID, shown.ID),
 				"doors":  s.content.Doors(campaign.ID, shown.ID),
+				"turn":   map[string]any{"token_id": "", "round": 0},
 				"actor":  account,
 			})
 		case "door.set":
@@ -290,6 +364,54 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"open":    message.Open,
 				"actor":   account,
 			})
+		case "turn.next":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "ходом управляет мастер"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			tokens := s.content.Tokens(campaign.ID, current)
+			if len(tokens) == 0 {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "на сцене нет фишек"},
+				})
+				continue
+			}
+			sort.SliceStable(tokens, func(i, j int) bool {
+				return tokens[i].Initiative > tokens[j].Initiative
+			})
+			currentID, round := s.content.Turn(campaign.ID)
+			if round < 1 {
+				round = 1
+			}
+			next := 0
+			if currentID != "" {
+				for i, token := range tokens {
+					if token.ID == currentID {
+						next = i + 1
+						break
+					}
+				}
+				if next >= len(tokens) {
+					next = 0
+					round++
+				}
+			}
+			s.content.SetTurn(campaign.ID, tokens[next].ID, round)
+			room.broadcast(map[string]any{
+				"type":     "turn.set",
+				"seq":      room.nextSeq(),
+				"time":     s.now().UTC().Format(time.RFC3339),
+				"token_id": tokens[next].ID,
+				"round":    round,
+				"actor":    account,
+			})
 		case "token.place":
 			current := room.currentScene()
 			if !master(campaign.Role) {
@@ -308,7 +430,18 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			token, ok := s.content.CreateToken(campaign.ID, current, account.ID, message.Name, message.X, message.Y)
+			ownerID := message.OwnerID
+			if ownerID == "" {
+				ownerID = account.ID
+			} else if _, ok := s.content.Campaign(ownerID, campaign.ID); !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "владелец не в кампании"},
+				})
+				continue
+			}
+			token, ok := s.content.CreateToken(campaign.ID, current, ownerID, message.Name, message.X, message.Y)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -365,6 +498,73 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"seq":   room.nextSeq(),
 				"time":  s.now().UTC().Format(time.RFC3339),
 				"token": moved,
+				"actor": account,
+			})
+		case "token.update":
+			current := room.currentScene()
+			token, ok := s.content.Token(campaign.ID, current, message.TokenID)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "фишки нет"},
+				})
+				continue
+			}
+			if !master(campaign.Role) && token.OwnerID != account.ID {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "чужая фишка"},
+				})
+				continue
+			}
+			hp, hpMax, initiative := token.HP, token.HPMax, token.Initiative
+			if message.HPMax != nil {
+				hpMax = *message.HPMax
+			}
+			if hpMax < 1 || hpMax > 9999 {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "предел HP от 1 до 9999"},
+				})
+				continue
+			}
+			if message.HP != nil {
+				hp = *message.HP
+			}
+			if hp < 0 {
+				hp = 0
+			}
+			if hp > hpMax {
+				hp = hpMax
+			}
+			if message.Initiative != nil {
+				initiative = *message.Initiative
+			}
+			if initiative < -100 || initiative > 1000 {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "инициатива от -100 до 1000"},
+				})
+				continue
+			}
+			updated, ok := s.content.SetTokenStats(campaign.ID, current, token.ID, hp, hpMax, initiative)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "фишка не сохранилась"},
+				})
+				continue
+			}
+			room.broadcast(map[string]any{
+				"type":  "token.updated",
+				"seq":   room.nextSeq(),
+				"time":  s.now().UTC().Format(time.RFC3339),
+				"token": updated,
 				"actor": account,
 			})
 		default:

@@ -263,6 +263,94 @@ func (d *DB) Delete(token string) {
 	_, _ = d.db.Exec("DELETE FROM sessions WHERE token = ?", token)
 }
 
+// CreateInvite заводит одноразовый код входа в кампанию.
+func (d *DB) CreateInvite(campaignID, createdBy string, expires time.Time) (api.Invite, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		code, err := newInviteCode()
+		if err != nil {
+			return api.Invite{}, err
+		}
+		_, err = d.db.Exec(`INSERT INTO invites
+			(code, campaign_id, created_by, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			code, campaignID, createdBy,
+			time.Now().UTC().Format(time.RFC3339), expires.UTC().Format(time.RFC3339))
+		if err == nil {
+			return api.Invite{
+				Code:       code,
+				CampaignID: campaignID,
+				ExpiresAt:  expires.UTC().Format(time.RFC3339),
+			}, nil
+		}
+	}
+	return api.Invite{}, errors.New("storage: код приглашения не создался")
+}
+
+func newInviteCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("storage: код приглашения: %w", err)
+	}
+	code := make([]byte, len(raw))
+	for i, value := range raw {
+		code[i] = alphabet[int(value)%len(alphabet)]
+	}
+	return string(code), nil
+}
+
+// AcceptInvite вступает по коду. Повторное принятие тем же человеком — успех,
+// чужое повторное использование — api.ErrInviteUsed.
+func (d *DB) AcceptInvite(code, accountID string, now time.Time) (api.Campaign, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return api.Campaign{}, err
+	}
+	defer tx.Rollback()
+
+	var campaignID, expiresAt string
+	var acceptedBy sql.NullString
+	err = tx.QueryRow(`SELECT campaign_id, expires_at, accepted_by
+		FROM invites WHERE code = ?`, code).
+		Scan(&campaignID, &expiresAt, &acceptedBy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return api.Campaign{}, api.ErrInviteNotFound
+		}
+		return api.Campaign{}, err
+	}
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return api.Campaign{}, err
+	}
+	if now.After(expires) {
+		return api.Campaign{}, api.ErrInviteExpired
+	}
+	if acceptedBy.Valid && acceptedBy.String != accountID {
+		return api.Campaign{}, api.ErrInviteUsed
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO memberships
+		(account_id, campaign_id, role) VALUES (?, ?, ?)`,
+		accountID, campaignID, api.RolePlayer); err != nil {
+		return api.Campaign{}, err
+	}
+	if _, err := tx.Exec(`UPDATE invites SET accepted_by = ?, accepted_at = ?
+		WHERE code = ?`, accountID, now.UTC().Format(time.RFC3339), code); err != nil {
+		return api.Campaign{}, err
+	}
+	var campaign api.Campaign
+	if err := tx.QueryRow(`SELECT c.id, c.name, m.role
+		FROM campaigns c JOIN memberships m ON m.campaign_id = c.id
+		WHERE c.id = ? AND m.account_id = ?`, campaignID, accountID).
+		Scan(&campaign.ID, &campaign.Name, &campaign.Role); err != nil {
+		return api.Campaign{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return api.Campaign{}, err
+	}
+	return campaign, nil
+}
+
 // ImageBytes отдаёт байты картинки кампании.
 func (d *DB) ImageBytes(campaignID, imageID string) ([]byte, string, bool) {
 	var data []byte
@@ -466,9 +554,36 @@ func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
 	return tx.Commit() == nil
 }
 
+// Turn — чей ход в кампании и какой круг. Пустая фишка значит «бой не начат».
+func (d *DB) Turn(campaignID string) (string, int) {
+	var tokenID string
+	var round int
+	err := d.db.QueryRow("SELECT token_id, round FROM table_turns WHERE campaign_id = ?",
+		campaignID).Scan(&tokenID, &round)
+	if err != nil {
+		return "", 0
+	}
+	return tokenID, round
+}
+
+// SetTurn сохраняет текущий ход. Пустая фишка и круг 0 — бой не начат.
+func (d *DB) SetTurn(campaignID, tokenID string, round int) bool {
+	if round < 0 {
+		round = 0
+	}
+	_, err := d.db.Exec(`INSERT INTO table_turns (campaign_id, token_id, round)
+		VALUES (?, ?, ?)
+		ON CONFLICT(campaign_id) DO UPDATE SET token_id = excluded.token_id, round = excluded.round`,
+		campaignID, tokenID, round)
+	return err == nil
+}
+
 func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
-	rows, err := d.db.Query(`SELECT id, scene_id, name, x, y, color, COALESCE(owner_id, '')
-		FROM tokens WHERE campaign_id = ? AND scene_id = ? ORDER BY created_at, id`,
+	rows, err := d.db.Query(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
+		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
+		t.hp_current, t.hp_max, t.initiative
+		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
+		WHERE t.campaign_id = ? AND t.scene_id = ? ORDER BY t.created_at, t.id`,
 		campaignID, sceneID)
 	if err != nil {
 		return nil
@@ -478,7 +593,8 @@ func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 	for rows.Next() {
 		var token api.Token
 		if err := rows.Scan(&token.ID, &token.SceneID, &token.Name,
-			&token.X, &token.Y, &token.Color, &token.OwnerID); err != nil {
+			&token.X, &token.Y, &token.Color, &token.OwnerID, &token.OwnerLogin,
+			&token.HP, &token.HPMax, &token.Initiative); err != nil {
 			return nil
 		}
 		out = append(out, token)
@@ -489,11 +605,15 @@ func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 // Token — одна фишка сцены.
 func (d *DB) Token(campaignID, sceneID, tokenID string) (api.Token, bool) {
 	var token api.Token
-	err := d.db.QueryRow(`SELECT id, scene_id, name, x, y, color, COALESCE(owner_id, '')
-		FROM tokens WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+	err := d.db.QueryRow(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
+		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
+		t.hp_current, t.hp_max, t.initiative
+		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
+		WHERE t.campaign_id = ? AND t.scene_id = ? AND t.id = ?`,
 		campaignID, sceneID, tokenID).
 		Scan(&token.ID, &token.SceneID, &token.Name, &token.X, &token.Y,
-			&token.Color, &token.OwnerID)
+			&token.Color, &token.OwnerID, &token.OwnerLogin,
+			&token.HP, &token.HPMax, &token.Initiative)
 	if err != nil {
 		return api.Token{}, false
 	}
@@ -530,6 +650,16 @@ func (d *DB) MoveToken(campaignID, sceneID, tokenID string, x, y float64) (api.T
 	if _, err := d.db.Exec(`UPDATE tokens SET x = ?, y = ?
 		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
 		x, y, campaignID, sceneID, tokenID); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, tokenID)
+}
+
+// SetTokenStats сохраняет HP и инициативу; пределы проверяет вызывающий.
+func (d *DB) SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (api.Token, bool) {
+	if _, err := d.db.Exec(`UPDATE tokens SET hp_current = ?, hp_max = ?, initiative = ?
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		hp, hpMax, initiative, campaignID, sceneID, tokenID); err != nil {
 		return api.Token{}, false
 	}
 	return d.Token(campaignID, sceneID, tokenID)

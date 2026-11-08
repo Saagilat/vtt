@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Saagilat/vtt/server/internal/annotation"
 )
@@ -62,22 +63,49 @@ type SceneSummary struct {
 	Active bool   `json:"active"`
 }
 
+// Invite — одноразовый код входа в кампанию.
+type Invite struct {
+	Code       string `json:"code"`
+	CampaignID string `json:"campaign_id"`
+	ExpiresAt  string `json:"expires_at"`
+}
+
+// TokenPatch — изменение характеристик фишки. nil значит «не трогать».
+type TokenPatch struct {
+	HP         *int
+	HPMax      *int
+	Initiative *int
+}
+
 // Token — фишка на сцене. Координаты — в пикселях картинки.
 type Token struct {
-	ID      string  `json:"id"`
-	SceneID string  `json:"scene_id"`
-	Name    string  `json:"name"`
-	X       float64 `json:"x"`
-	Y       float64 `json:"y"`
-	Color   string  `json:"color"`
-	OwnerID string  `json:"owner_id,omitempty"`
+	ID         string  `json:"id"`
+	SceneID    string  `json:"scene_id"`
+	Name       string  `json:"name"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	Color      string  `json:"color"`
+	OwnerID    string  `json:"owner_id,omitempty"`
+	OwnerLogin string  `json:"owner_login,omitempty"`
+	HP         int     `json:"hp"`
+	HPMax      int     `json:"hp_max"`
+	Initiative int     `json:"initiative"`
 }
+
+// ErrInviteNotFound — кода нет.
+var (
+	ErrInviteNotFound = errors.New("приглашения нет")
+	ErrInviteExpired  = errors.New("срок приглашения истёк")
+	ErrInviteUsed     = errors.New("приглашение уже использовано")
+)
 
 // Content — кампании, картинки и сцены. Отдельный интерфейс, чтобы вход и сессии
 // можно было проверять без базы, а контент подключать по мере готовности.
 type Content interface {
 	CreateCampaignFor(ownerID, name string) (Campaign, error)
 	Campaign(accountID, campaignID string) (CampaignDetail, bool)
+	CreateInvite(campaignID, createdBy string, expires time.Time) (Invite, error)
+	AcceptInvite(code, accountID string, now time.Time) (Campaign, error)
 	AddImage(campaignID string, data []byte, mime string, width, height int, sha string) (Image, error)
 	CreateScene(campaignID, imageID, name string, annotation []byte, active bool) (Scene, error)
 	Scene(campaignID, sceneID string) (Scene, bool)
@@ -87,9 +115,12 @@ type Content interface {
 	Token(campaignID, sceneID, tokenID string) (Token, bool)
 	CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (Token, bool)
 	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
+	SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (Token, bool)
 	Doors(campaignID, sceneID string) map[string]bool
 	SetDoor(campaignID, sceneID, doorID string, open bool) bool
 	SetActiveScene(campaignID, sceneID string) bool
+	Turn(campaignID string) (tokenID string, round int)
+	SetTurn(campaignID, tokenID string, round int) bool
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.
@@ -144,6 +175,52 @@ func (s *server) getCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, campaign)
+}
+
+// Инвайт живёт сутки: код передают в чате, а не хранят месяцами.
+const inviteTTL = 24 * time.Hour
+
+func (s *server) createInvite(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	if campaign.Role != RoleOwner {
+		writeError(w, http.StatusForbidden, "forbidden", "приглашает владелец кампании")
+		return
+	}
+	invite, err := s.content.CreateInvite(campaign.ID, account.ID, s.now().Add(inviteTTL))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "conflict", "приглашение не создалось")
+		return
+	}
+	writeJSON(w, http.StatusCreated, invite)
+}
+
+func (s *server) acceptInvite(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	code := strings.ToUpper(strings.TrimSpace(r.PathValue("code")))
+	campaign, err := s.content.AcceptInvite(code, account.ID, s.now())
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, campaign)
+	case errors.Is(err, ErrInviteNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "приглашения нет")
+	case errors.Is(err, ErrInviteExpired):
+		writeError(w, http.StatusConflict, "conflict", "срок приглашения истёк")
+	case errors.Is(err, ErrInviteUsed):
+		writeError(w, http.StatusConflict, "conflict", "приглашение уже использовано")
+	default:
+		writeError(w, http.StatusInternalServerError, "conflict", "приглашение не принято")
+	}
 }
 
 func readPart(r *http.Request, name string) ([]byte, string, error) {
