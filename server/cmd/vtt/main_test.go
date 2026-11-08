@@ -5,15 +5,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Saagilat/vtt/server/internal/storage"
 )
 
 // schemaPath — схема контракта от каталога пакета (server/cmd/vtt).
 var schemaPath = filepath.Join("..", "..", "..", "contract", "annotation.v1.schema.json")
 
-// runOnce запускает команду и возвращает код возврата, stdout и stderr.
+// runOnce запускает команду без ввода и возвращает код возврата, stdout и stderr.
 func runOnce(args ...string) (int, string, string) {
+	return runWithInput("", args...)
+}
+
+func runWithInput(input string, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := run(args, &stdout, &stderr)
+	code := run(args, strings.NewReader(input), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -89,5 +95,37 @@ func TestExtraArguments(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "лишний") {
 		t.Fatalf("в отказе ждали лишний аргумент: %s", stderr)
+	}
+}
+
+// TestCreateAccount — аккаунт заводится из командной строки до появления панели.
+func TestCreateAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vtt.db")
+	code, stdout, stderr := runWithInput("пароль\n", "--db="+path, "--create-account=alice")
+	if code != exitOK {
+		t.Fatalf("код %d, ждали %d (%s)", code, exitOK, stderr)
+	}
+	if !strings.Contains(stdout, "заведён") {
+		t.Fatalf("в stdout ждали подтверждение: %q", stdout)
+	}
+	db, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("база: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Authenticate("alice", "пароль"); err != nil {
+		t.Fatalf("заведённый аккаунт не входит: %v", err)
+	}
+}
+
+// TestCreateAccountEmptyPassword — пустой пароль не заводит аккаунт.
+func TestCreateAccountEmptyPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vtt.db")
+	code, _, stderr := runWithInput("\n", "--db="+path, "--create-account=alice")
+	if code != exitLaunch {
+		t.Fatalf("код %d, ждали %d", code, exitLaunch)
+	}
+	if !strings.Contains(stderr, "пароль") {
+		t.Fatalf("в отказе ждали слово про пароль: %s", stderr)
 	}
 }

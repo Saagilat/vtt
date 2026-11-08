@@ -17,6 +17,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # Драйвер базы — чистый Go: сборка и тесты идут без cgo, бинарь статический.
+      CGO_ENABLED: '0'
     defaults:
       run:
         working-directory: server
@@ -35,10 +38,17 @@ jobs:
           fi
       - name: Разбор — go vet
         run: go vet ./...
-      - name: Тесты — набор случаев контракта, пределы и пример
+      - name: Тесты — контракт, пределы, API и база
         run: go test ./...
-      - name: Сборка
-        run: go build -trimpath -o vtt ./cmd/vtt
+      - name: Сборка — без cgo, статический бинарь
+        run: |
+          go build -trimpath -o vtt ./cmd/vtt
+          file vtt | grep -q 'statically linked'
+      - name: Аккаунт и база — CLI заводит человека, база открывается
+        run: |
+          db=$RUNNER_TEMP/vtt.db
+          printf 'пароль\n' | ./vtt --db=$db --create-account=alice
+          ./vtt --db=$db --mode=game --schema=../contract/annotation.v1.schema.json
       - name: Скелет отвечает — оба режима стартуют, незнакомый отвергается
         run: |
           ./vtt --version
