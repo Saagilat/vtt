@@ -300,6 +300,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"round":    turnRound,
 			},
 			"visibility": visibility,
+			"chat":       s.content.ChatMessages(campaign.ID, 50),
 		},
 		"actions": actions,
 	}
@@ -339,14 +340,24 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			if channel == "" {
 				channel = "table"
 			}
+			stored, ok := s.content.AddChatMessage(campaign.ID, account.ID, text, channel)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "conflict", "message": "сообщение не сохранилось"},
+				})
+				continue
+			}
 			seq := room.nextSeq()
 			room.broadcast(map[string]any{
-				"type":    "chat.said",
-				"seq":     seq,
-				"time":    s.now().UTC().Format(time.RFC3339),
-				"text":    text,
-				"channel": channel,
-				"actor":   account,
+				"type":       "chat.said",
+				"seq":        seq,
+				"time":       s.now().UTC().Format(time.RFC3339),
+				"message_id": stored.ID,
+				"text":       text,
+				"channel":    channel,
+				"actor":      account,
 			})
 		case "roll":
 			result, err := parseRoll(message.Formula)

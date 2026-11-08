@@ -575,7 +575,59 @@ func (d *DB) SaveExploredMask(campaignID, sceneID, accountID string, data []byte
 	return err == nil
 }
 
-// SetSceneLight переключает освещённость сцены: bright или dark.
+// AddChatMessage сохраняет сообщение и возвращает его с логином автора.
+func (d *DB) AddChatMessage(campaignID, accountID, text, channel string) (api.ChatMessage, bool) {
+	id, err := newID("m")
+	if err != nil {
+		return api.ChatMessage{}, false
+	}
+	created := time.Now().UTC().Format(time.RFC3339)
+	if _, err := d.db.Exec(`INSERT INTO chat_messages
+		(id, campaign_id, account_id, text, channel, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		id, campaignID, accountID, text, channel, created); err != nil {
+		return api.ChatMessage{}, false
+	}
+	var message api.ChatMessage
+	err = d.db.QueryRow(`SELECT m.id, m.text, m.channel, m.created_at, a.id, a.login
+		FROM chat_messages m JOIN accounts a ON a.id = m.account_id
+		WHERE m.id = ?`, id).
+		Scan(&message.ID, &message.Text, &message.Channel, &message.CreatedAt,
+			&message.Actor.ID, &message.Actor.Login)
+	if err != nil {
+		return api.ChatMessage{}, false
+	}
+	return message, true
+}
+
+// ChatMessages отдаёт последние сообщения в хронологическом порядке.
+func (d *DB) ChatMessages(campaignID string, limit int) []api.ChatMessage {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := d.db.Query(`SELECT m.id, m.text, m.channel, m.created_at, a.id, a.login
+		FROM chat_messages m JOIN accounts a ON a.id = m.account_id
+		WHERE m.campaign_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+		campaignID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]api.ChatMessage, 0, limit)
+	for rows.Next() {
+		var message api.ChatMessage
+		if err := rows.Scan(&message.ID, &message.Text, &message.Channel, &message.CreatedAt,
+			&message.Actor.ID, &message.Actor.Login); err != nil {
+			return nil
+		}
+		out = append(out, message)
+	}
+	for left, right := 0, len(out)-1; left < right; left, right = left+1, right-1 {
+		out[left], out[right] = out[right], out[left]
+	}
+	return out
+}
+
 func (d *DB) SetSceneLight(campaignID, sceneID, light string) bool {
 	if light != "bright" && light != "dark" {
 		return false

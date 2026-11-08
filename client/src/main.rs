@@ -103,6 +103,7 @@ struct VisibilityMask {
 
 enum ChatEvent {
     Connected,
+    History(Vec<String>),
     Message(String),
     Tokens(Vec<Token>),
     TokenPlaced(Token),
@@ -1897,6 +1898,17 @@ impl App {
                                 ) {
                                     let _ = sender.send(ChatEvent::Visibility(mask, None));
                                 }
+                                if let Some(items) = value["state"]["chat"].as_array() {
+                                    let lines = items
+                                        .iter()
+                                        .filter_map(|item| {
+                                            let login = item["actor"]["login"].as_str()?;
+                                            let text = item["text"].as_str()?;
+                                            Some(format!("{login}: {text}"))
+                                        })
+                                        .collect();
+                                    let _ = sender.send(ChatEvent::History(lines));
+                                }
                             }
                             Some("chat.said") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
@@ -2041,6 +2053,7 @@ impl App {
         for event in events {
             match event {
                 ChatEvent::Connected => self.chat_status = "на связи".to_string(),
+                ChatEvent::History(lines) => self.chat_lines = lines,
                 ChatEvent::Message(line) => self.chat_lines.push(line),
                 ChatEvent::Tokens(list) => {
                     let scene_id = self.current_scene_id();

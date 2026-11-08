@@ -507,6 +507,33 @@ func TestExploredMaskStored(t *testing.T) {
 	}
 }
 
+func TestChatHistory(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Чат")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := db.AddChatMessage(campaign.ID, alice.ID, "первое", "table")
+	if !ok {
+		t.Fatal("первое сообщение не сохранилось")
+	}
+	second, ok := db.AddChatMessage(campaign.ID, alice.ID, "второе", "table")
+	if !ok {
+		t.Fatal("второе сообщение не сохранилось")
+	}
+	items := db.ChatMessages(campaign.ID, 10)
+	if len(items) != 2 || items[0].ID != first.ID || items[1].ID != second.ID {
+		t.Fatalf("история: %+v", items)
+	}
+	if items[0].Actor.Login != "alice" {
+		t.Fatalf("автор: %+v", items[0].Actor)
+	}
+}
+
 func TestSceneTurnsIndependent(t *testing.T) {
 	db := openTemp(t)
 	alice, err := db.CreateAccount("alice", "пароль")

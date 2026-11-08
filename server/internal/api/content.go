@@ -71,6 +71,15 @@ type Invite struct {
 	ExpiresAt  string `json:"expires_at"`
 }
 
+// ChatMessage — сохранённое сообщение стола.
+type ChatMessage struct {
+	ID        string  `json:"id"`
+	Text      string  `json:"text"`
+	Channel   string  `json:"channel"`
+	CreatedAt string  `json:"created_at"`
+	Actor     Account `json:"actor"`
+}
+
 // TokenPatch — изменение характеристик фишки. nil значит «не трогать».
 type TokenPatch struct {
 	HP         *int
@@ -128,6 +137,8 @@ type Content interface {
 	SetSceneLight(campaignID, sceneID, light string) bool
 	Turn(campaignID, sceneID string) (tokenID string, round int)
 	SetTurn(campaignID, sceneID, tokenID string, round int) bool
+	AddChatMessage(campaignID, accountID, text, channel string) (ChatMessage, bool)
+	ChatMessages(campaignID string, limit int) []ChatMessage
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.
