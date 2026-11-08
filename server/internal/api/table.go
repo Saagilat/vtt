@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -51,7 +52,9 @@ type tableMessage struct {
 	IntentID string  `json:"intent_id,omitempty"`
 	TokenID  string  `json:"token_id,omitempty"`
 	SceneID  string  `json:"scene_id,omitempty"`
+	DoorID   string  `json:"door_id,omitempty"`
 	Name     string  `json:"name,omitempty"`
+	Open     bool    `json:"open,omitempty"`
 	X        float64 `json:"x,omitempty"`
 	Y        float64 `json:"y,omitempty"`
 }
@@ -87,6 +90,21 @@ func (r *tableRoom) setScene(sceneID string) {
 	r.mu.Lock()
 	r.sceneID = sceneID
 	r.mu.Unlock()
+}
+
+func doorExists(scene Scene, doorID string) bool {
+	var doors []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(scene.Doors, &doors); err != nil {
+		return false
+	}
+	for _, door := range doors {
+		if door.ID == doorID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *server) table(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +150,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show")
+		actions = append(actions, "token.place", "scene.show", "door.set")
 	}
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -151,6 +169,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			"campaign": map[string]string{"id": campaign.ID, "name": campaign.Name},
 			"scene_id": sceneID,
 			"tokens":   tokens,
+			"doors":    s.content.Doors(campaign.ID, sceneID),
 		},
 		"actions": actions,
 	}
@@ -233,7 +252,43 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"time":   s.now().UTC().Format(time.RFC3339),
 				"scene":  shown,
 				"tokens": s.content.Tokens(campaign.ID, shown.ID),
+				"doors":  s.content.Doors(campaign.ID, shown.ID),
 				"actor":  account,
+			})
+		case "door.set":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "дверями управляет мастер"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			scene, ok := s.content.Scene(campaign.ID, current)
+			if !ok || !doorExists(scene, message.DoorID) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "двери нет"},
+				})
+				continue
+			}
+			if !s.content.SetDoor(campaign.ID, current, message.DoorID, message.Open) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "дверь не сохранилась"},
+				})
+				continue
+			}
+			room.broadcast(map[string]any{
+				"type":    "door.set",
+				"seq":     room.nextSeq(),
+				"time":    s.now().UTC().Format(time.RFC3339),
+				"door_id": message.DoorID,
+				"open":    message.Open,
+				"actor":   account,
 			})
 		case "token.place":
 			current := room.currentScene()

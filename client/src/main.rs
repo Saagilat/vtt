@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -73,7 +74,9 @@ enum ChatEvent {
     Tokens(Vec<Token>),
     TokenPlaced(Token),
     TokenMoved(Token),
-    SceneShown(SceneSummary, Vec<Token>),
+    SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
+    Doors(HashMap<String, bool>),
+    DoorSet(String, bool),
     Error(String),
 }
 
@@ -139,6 +142,7 @@ struct App {
     tokens: Vec<Token>,
     token_name: String,
     drag_token: Option<String>,
+    doors: HashMap<String, bool>,
     #[allow(dead_code)]
     install_dir: Option<PathBuf>,
 }
@@ -177,6 +181,7 @@ impl App {
             tokens: Vec::new(),
             token_name: "Фишка".to_string(),
             drag_token: None,
+            doors: HashMap::new(),
             install_dir,
         };
         app.resume_session();
@@ -250,6 +255,7 @@ impl App {
         self.chat_status.clear();
         self.tokens.clear();
         self.drag_token = None;
+        self.doors.clear();
         self.screen = Screen::Login;
         self.notice = "вы вышли".to_string();
     }
@@ -674,7 +680,18 @@ impl App {
             let from = door.get("from").map(points_of).unwrap_or_default();
             let to = door.get("to").map(points_of).unwrap_or_default();
             if let (Some(from), Some(to)) = (from.first(), to.first()) {
-                painter.line_segment([*from, *to], stroke_green);
+                let open = door
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| self.doors.get(id))
+                    .copied()
+                    .unwrap_or(false);
+                let stroke = if open {
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 150, 150))
+                } else {
+                    stroke_green
+                };
+                painter.line_segment([*from, *to], stroke);
             }
         }
         for area in scene.areas.as_array().into_iter().flatten() {
@@ -823,6 +840,7 @@ impl App {
         self.chat_rx = None;
         self.chat_lines.clear();
         self.tokens.clear();
+        self.doors.clear();
         self.drag_token = None;
         self.chat_status = "подключение…".to_string();
         let (token, url) = match (&self.token, self.ws_url(campaign_id, scene_id)) {
@@ -868,6 +886,15 @@ impl App {
                                         .collect();
                                     let _ = sender.send(ChatEvent::Tokens(tokens));
                                 }
+                                if let Some(object) = value["state"]["doors"].as_object() {
+                                    let doors: HashMap<String, bool> = object
+                                        .iter()
+                                        .filter_map(|(id, open)| {
+                                            Some((id.clone(), open.as_bool()?))
+                                        })
+                                        .collect();
+                                    let _ = sender.send(ChatEvent::Doors(doors));
+                                }
                             }
                             Some("chat.said") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
@@ -889,7 +916,19 @@ impl App {
                                                 .collect()
                                         })
                                         .unwrap_or_default();
-                                    let _ = sender.send(ChatEvent::SceneShown(scene, tokens));
+                                    let doors: HashMap<String, bool> = value["doors"]
+                                        .as_object()
+                                        .map(|object| {
+                                            object
+                                                .iter()
+                                                .filter_map(|(id, open)| {
+                                                    Some((id.clone(), open.as_bool()?))
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let _ =
+                                        sender.send(ChatEvent::SceneShown(scene, tokens, doors));
                                 }
                             }
                             Some("token.placed") => {
@@ -904,6 +943,14 @@ impl App {
                                     serde_json::from_value::<Token>(value["token"].clone())
                                 {
                                     let _ = sender.send(ChatEvent::TokenMoved(token));
+                                }
+                            }
+                            Some("door.set") => {
+                                if let (Some(door_id), Some(open)) =
+                                    (value["door_id"].as_str(), value["open"].as_bool())
+                                {
+                                    let _ =
+                                        sender.send(ChatEvent::DoorSet(door_id.to_string(), open));
                                 }
                             }
                             Some("error") => {
@@ -956,12 +1003,17 @@ impl App {
                         *item = token;
                     }
                 }
-                ChatEvent::SceneShown(scene, tokens) => {
+                ChatEvent::SceneShown(scene, tokens, doors) => {
                     if self.load_scene(&scene, Some(tokens)) {
+                        self.doors = doors;
                         for item in &mut self.scenes {
                             item.active = item.id == scene.id;
                         }
                     }
+                }
+                ChatEvent::Doors(doors) => self.doors = doors,
+                ChatEvent::DoorSet(id, open) => {
+                    self.doors.insert(id, open);
                 }
                 ChatEvent::Error(error) => self.chat_status = format!("ошибка: {error}"),
             }
@@ -1073,6 +1125,37 @@ impl App {
                     self.place_token();
                 }
                 ui.label("перетащите фишку по карте");
+
+                let door_ids: Vec<String> = self
+                    .scene
+                    .as_ref()
+                    .and_then(|scene| scene.doors.as_array())
+                    .map(|doors| {
+                        doors
+                            .iter()
+                            .filter_map(|door| door.get("id")?.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !door_ids.is_empty() {
+                    ui.separator();
+                    ui.heading("Двери");
+                    let mut toggle = None;
+                    for id in door_ids {
+                        let mut open = self.doors.get(&id).copied().unwrap_or(false);
+                        if ui.checkbox(&mut open, &id).changed() {
+                            toggle = Some((id, open));
+                        }
+                    }
+                    if let Some((id, open)) = toggle {
+                        self.doors.insert(id.clone(), open);
+                        self.send_intent(serde_json::json!({
+                            "type": "door.set",
+                            "door_id": id,
+                            "open": open,
+                        }));
+                    }
+                }
             }
         }
     }

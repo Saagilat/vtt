@@ -87,6 +87,8 @@ type Content interface {
 	Token(campaignID, sceneID, tokenID string) (Token, bool)
 	CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (Token, bool)
 	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
+	Doors(campaignID, sceneID string) map[string]bool
+	SetDoor(campaignID, sceneID, doorID string, open bool) bool
 	SetActiveScene(campaignID, sceneID string) bool
 }
 

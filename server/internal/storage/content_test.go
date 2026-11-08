@@ -103,7 +103,10 @@ func annotationFor(width, height int) []byte {
 		"walls": []any{map[string]any{
 			"id": "w1", "points": []any{[]any{10, 10}, []any{50, 10}},
 		}},
-		"doors": []any{},
+		"doors": []any{map[string]any{
+			"id": "d1", "wall_id": "w1", "type": "normal",
+			"from": []any{10, 10}, "to": []any{50, 10},
+		}},
 		"areas": []any{},
 	})
 	return data
@@ -352,6 +355,20 @@ func TestTableChat(t *testing.T) {
 		if item.ID == scene2.ID && !item.Active {
 			t.Fatalf("сцена не стала активной")
 		}
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "door.set", "door_id": "d1", "open": true, "intent_id": "i4b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("door.set: %v", err)
+	}
+	if reply["type"] != "door.set" || reply["open"] != true {
+		t.Fatalf("ответ двери: %+v", reply)
+	}
+	if !db.Doors(campaign.ID, scene2.ID)["d1"] {
+		t.Fatalf("дверь не сохранилась открытой")
 	}
 	if err := conn.WriteJSON(map[string]any{
 		"type": "token.place", "name": "Второй", "x": 5, "y": 6, "intent_id": "i5",

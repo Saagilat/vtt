@@ -405,7 +405,44 @@ func (d *DB) Scene(campaignID, sceneID string) (api.Scene, bool) {
 		WHERE s.campaign_id = ? AND s.id = ?`, campaignID, sceneID)
 }
 
-// SetActiveScene делает сцену активной и снимает флаг с остальных.
+// Doors — состояние дверей сцены: true — открыта.
+func (d *DB) Doors(campaignID, sceneID string) map[string]bool {
+	rows, err := d.db.Query(`SELECT ds.door_id, ds.open
+		FROM door_states ds JOIN scenes s ON s.id = ds.scene_id
+		WHERE s.campaign_id = ? AND ds.scene_id = ?`, campaignID, sceneID)
+	if err != nil {
+		return map[string]bool{}
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var open int
+		if err := rows.Scan(&id, &open); err != nil {
+			return map[string]bool{}
+		}
+		out[id] = open != 0
+	}
+	return out
+}
+
+// SetDoor сохраняет состояние двери.
+func (d *DB) SetDoor(campaignID, sceneID, doorID string, open bool) bool {
+	var exists int
+	if err := d.db.QueryRow("SELECT 1 FROM scenes WHERE campaign_id = ? AND id = ?",
+		campaignID, sceneID).Scan(&exists); err != nil {
+		return false
+	}
+	value := 0
+	if open {
+		value = 1
+	}
+	_, err := d.db.Exec(`INSERT INTO door_states (scene_id, door_id, open) VALUES (?, ?, ?)
+		ON CONFLICT(scene_id, door_id) DO UPDATE SET open = excluded.open`,
+		sceneID, doorID, value)
+	return err == nil
+}
+
 func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
 	tx, err := d.db.Begin()
 	if err != nil {
