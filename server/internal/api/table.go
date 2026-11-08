@@ -386,7 +386,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move", "token.update", "initiative.roll", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light", "initiative.roll_all", "combat.reset")
+		actions = append(actions, "token.place", "token.remove", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light", "initiative.roll_all", "combat.reset")
 	}
 	turnToken, turnRound := s.content.Turn(campaign.ID, sceneID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
@@ -883,6 +883,43 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"initiative_cleared": message.ClearInitiative,
 				"actor":              account,
 			})
+		case "token.remove":
+			current := room.currentScene()
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "убирать фишки может мастер"},
+				})
+				continue
+			}
+			if !s.content.DeleteToken(campaign.ID, current, message.TokenID) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "фишки нет"},
+				})
+				continue
+			}
+			if turnID, _ := s.content.Turn(campaign.ID, current); turnID == message.TokenID {
+				s.content.SetTurn(campaign.ID, current, "", 0)
+				room.broadcast(map[string]any{
+					"type":     "turn.set",
+					"seq":      room.nextSeq(),
+					"time":     s.now().UTC().Format(time.RFC3339),
+					"token_id": "",
+					"round":    0,
+					"actor":    account,
+				})
+			}
+			room.broadcast(map[string]any{
+				"type":     "token.removed",
+				"seq":      room.nextSeq(),
+				"time":     s.now().UTC().Format(time.RFC3339),
+				"token_id": message.TokenID,
+				"actor":    account,
+			})
+			s.sendVisibility(room, campaign.ID, current)
 		case "token.place":
 			current := room.currentScene()
 			if !master(campaign.Role) {

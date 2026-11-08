@@ -1139,6 +1139,17 @@ func (d *DB) SetCharacterTokensHP(campaignID, characterID string, hp, hpMax int)
 	return err == nil
 }
 
+// DeleteToken убирает фишку со сцены.
+func (d *DB) DeleteToken(campaignID, sceneID, tokenID string) bool {
+	result, err := d.db.Exec(`DELETE FROM tokens
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`, campaignID, sceneID, tokenID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
+}
+
 func (d *DB) Scenes(campaignID string) []api.SceneSummary {
 	rows, err := d.db.Query(`SELECT s.id, s.name, s.active,
 		i.id, i.sha256, i.width, i.height, i.mime

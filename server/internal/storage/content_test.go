@@ -572,6 +572,27 @@ func TestTableChat(t *testing.T) {
 	if reply["type"] != "token.placed" || !ok || second["scene_id"] != scene2.ID {
 		t.Fatalf("фишка не переехала на новую сцену: %+v", reply)
 	}
+	secondID, _ := second["id"].(string)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.remove", "token_id": secondID, "intent_id": "i6",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	removed := false
+	for i := 0; i < 4 && !removed; i++ {
+		if err := conn.ReadJSON(&reply); err != nil {
+			t.Fatalf("token.remove: %v", err)
+		}
+		if reply["type"] == "token.removed" && reply["token_id"] == secondID {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatal("фишка не удалилась")
+	}
+	if _, ok := db.Token(campaign.ID, scene2.ID, secondID); ok {
+		t.Fatal("удалённая фишка осталась в базе")
+	}
 }
 
 func TestCharacters(t *testing.T) {

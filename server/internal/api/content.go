@@ -157,6 +157,7 @@ type Content interface {
 	SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (Token, bool)
 	SetTokenDarkvision(campaignID, sceneID, tokenID string, darkvision int) (Token, bool)
 	SetTokenCharacter(campaignID, sceneID, tokenID, characterID string) (Token, bool)
+	DeleteToken(campaignID, sceneID, tokenID string) bool
 	SetCharacterHP(campaignID, characterID string, hp, hpMax int) (Character, bool)
 	SetCharacterTokensHP(campaignID, characterID string, hp, hpMax int) bool
 	Doors(campaignID, sceneID string) map[string]bool

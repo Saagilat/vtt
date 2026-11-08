@@ -156,6 +156,7 @@ enum ChatEvent {
     TokenPlaced(Token),
     TokenMoved(Token),
     TokenUpdated(Token),
+    TokenRemoved(String),
     InitiativeRolled(Token, String, i64),
     CombatReset(Vec<Token>, bool),
     CharacterChanged(Character),
@@ -175,6 +176,7 @@ enum ChatEvent {
     Visibility(VisibilityMask, Option<String>),
     Roll(String),
     Turn(Option<String>, u32),
+    Disconnected(String),
     Error(String),
 }
 
@@ -512,6 +514,9 @@ struct App {
     show_settings: bool,
     hint_dismissed: bool,
     drag_token: Option<String>,
+    confirm_token_remove: Option<String>,
+    reconnect_at: Option<std::time::Instant>,
+    reconnect_attempts: u32,
     doors: HashMap<String, bool>,
     #[allow(dead_code)]
     install_dir: Option<PathBuf>,
@@ -604,6 +609,9 @@ impl App {
             show_settings: false,
             hint_dismissed: false,
             drag_token: None,
+            confirm_token_remove: None,
+            reconnect_at: None,
+            reconnect_attempts: 0,
             doors: HashMap::new(),
             install_dir,
         };
@@ -682,6 +690,9 @@ impl App {
         self.selected_note = None;
         self.tokens.clear();
         self.drag_token = None;
+        self.confirm_token_remove = None;
+        self.reconnect_at = None;
+        self.reconnect_attempts = 0;
         self.doors.clear();
         self.screen = Screen::Login;
         self.notice = "вы вышли".to_string();
@@ -1044,6 +1055,9 @@ impl App {
     fn open_scene(&mut self, summary: SceneSummary) {
         self.edit_mode = EditMode::Off;
         self.edit_points.clear();
+        self.confirm_token_remove = None;
+        self.reconnect_at = None;
+        self.reconnect_attempts = 0;
         if !self.load_scene(&summary, None) {
             return;
         }
@@ -2740,6 +2754,7 @@ impl App {
                 Ok(request) => request,
                 Err(error) => {
                     let _ = sender.send(ChatEvent::Error(error.to_string()));
+                    let _ = sender.send(ChatEvent::Disconnected(error.to_string()));
                     return;
                 }
             };
@@ -2750,6 +2765,7 @@ impl App {
                 Ok(pair) => pair,
                 Err(error) => {
                     let _ = sender.send(ChatEvent::Error(error.to_string()));
+                    let _ = sender.send(ChatEvent::Disconnected(error.to_string()));
                     return;
                 }
             };
@@ -2898,6 +2914,12 @@ impl App {
                                     let _ = sender.send(ChatEvent::TokenUpdated(token));
                                 }
                             }
+                            Some("token.removed") => {
+                                if let Some(token_id) = value["token_id"].as_str() {
+                                    let _ =
+                                        sender.send(ChatEvent::TokenRemoved(token_id.to_string()));
+                                }
+                            }
                             Some("initiative.rolled") => {
                                 if let Ok(token) =
                                     serde_json::from_value::<Token>(value["token"].clone())
@@ -3008,6 +3030,7 @@ impl App {
                     }
                 }
             }
+            let _ = sender.send(ChatEvent::Disconnected("соединение закрыто".to_string()));
         });
         self.chat_rx = Some(receiver);
     }
@@ -3021,7 +3044,11 @@ impl App {
         }
         for event in events {
             match event {
-                ChatEvent::Connected => self.chat_status = "на связи".to_string(),
+                ChatEvent::Connected => {
+                    self.chat_status = "на связи".to_string();
+                    self.reconnect_at = None;
+                    self.reconnect_attempts = 0;
+                }
                 ChatEvent::History(lines) => self.chat_lines = lines,
                 ChatEvent::Message(line) => self.chat_lines.push(line),
                 ChatEvent::Tokens(list) => {
@@ -3046,6 +3073,13 @@ impl App {
                 ChatEvent::TokenUpdated(token) => {
                     if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
                         *item = token;
+                    }
+                }
+                ChatEvent::TokenRemoved(token_id) => {
+                    self.tokens.retain(|token| token.id != token_id);
+                    if self.turn_token.as_deref() == Some(token_id.as_str()) {
+                        self.turn_token = None;
+                        self.round = 0;
                     }
                 }
                 ChatEvent::InitiativeRolled(token, formula, total) => {
@@ -3152,9 +3186,48 @@ impl App {
                 ChatEvent::DoorSet(id, open) => {
                     self.doors.insert(id, open);
                 }
+                ChatEvent::Disconnected(reason) => {
+                    self.chat_rx = None;
+                    self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
+                    if self.reconnect_attempts <= 5 {
+                        self.chat_status = "нет связи — переподключаюсь…".to_string();
+                        self.reconnect_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    } else {
+                        self.chat_status = format!("нет связи: {reason}");
+                        self.reconnect_at = None;
+                    }
+                }
                 ChatEvent::Error(error) => self.chat_status = format!("ошибка: {error}"),
             }
         }
+    }
+
+    fn tick_reconnect(&mut self) {
+        if self.screen != Screen::Scene || self.chat_rx.is_some() {
+            return;
+        }
+        let Some(at) = self.reconnect_at else {
+            return;
+        };
+        if std::time::Instant::now() < at {
+            return;
+        }
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => {
+                self.reconnect_at = None;
+                return;
+            }
+        };
+        let scene_id = self.current_scene_id();
+        if scene_id.is_empty() {
+            self.reconnect_at = None;
+            return;
+        }
+        self.reconnect_at = None;
+        self.chat_status = "переподключение…".to_string();
+        self.connect_table(&campaign.id, &scene_id);
     }
 
     fn current_scene_id(&self) -> String {
@@ -3279,6 +3352,14 @@ impl App {
         self.send_intent(serde_json::json!({
             "type": "combat.reset",
             "clear_initiative": clear_initiative,
+        }));
+    }
+
+    fn remove_token(&mut self, token_id: &str) {
+        self.confirm_token_remove = None;
+        self.send_intent(serde_json::json!({
+            "type": "token.remove",
+            "token_id": token_id,
         }));
     }
 
@@ -4126,7 +4207,28 @@ impl App {
                     if choice != token.character_id {
                         self.link_token(&token.id, &choice);
                     }
+                    if ui.small_button("удалить фишку").clicked() {
+                        self.confirm_token_remove = Some(token.id.clone());
+                    }
                 }
+            }
+            if let Some(id) = self.confirm_token_remove.clone() {
+                let name = ordered
+                    .iter()
+                    .find(|token| token.id == id)
+                    .map(|token| token.name.clone())
+                    .unwrap_or_else(|| "фишку".to_string());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Убрать фишку «{name}»?")).color(WARM_DANGER),
+                    );
+                    if accent_button(ui, "Да", 80.0).clicked() {
+                        self.remove_token(&id);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        self.confirm_token_remove = None;
+                    }
+                });
             }
             if let Some((id, hp, hp_max, initiative, darkvision)) = changed {
                 self.update_token(&id, hp, hp_max, initiative, darkvision);
@@ -4179,6 +4281,7 @@ impl eframe::App for App {
         self.make_texture(&ctx);
         self.make_fog_texture(&ctx);
         self.poll_chat();
+        self.tick_reconnect();
         let account_login = self.account.as_ref().map(|account| account.login.clone());
         let role_label = self
             .campaign

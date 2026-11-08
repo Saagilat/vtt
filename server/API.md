@@ -252,6 +252,7 @@ DELETE /v1/sessions/current → 204, тела нет
 |---|---|---|
 | `token.move` | `token_id`, `x`, `y` | игрок — своим, мастер — любым |
 | `token.place` | `name`, `owner_id`, `character_id`, `x`, `y` | только мастер: стены не проверяются |
+| `token.remove` | `token_id` | только мастер: убрать фишку со сцены |
 | `token.update` | `token_id`, `hp`, `hp_max`, `initiative`, `darkvision_ft`, `character_id` | владелец фишки, мастер; `character_id` — только мастер |
 | `initiative.roll` | `token_id` | владелец фишки, мастер: `1d20 + ЛОВ` из листа, результат пишется в инициативу |
 | `initiative.roll_all` | `start` | только мастер: бросок инициативы для всех фишек сцены; `start: true` сразу начинает первый круг |
