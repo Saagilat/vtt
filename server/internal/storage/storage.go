@@ -254,6 +254,38 @@ func (d *DB) RemoveMember(campaignID, accountID string) bool {
 	return err == nil && affected > 0
 }
 
+// TransferOwnership передаёт кампанию другому участнику; прежний владелец
+// становится мастером. Обе записи меняются одной транзакцией.
+func (d *DB) TransferOwnership(campaignID, ownerID, targetID string) bool {
+	if ownerID == targetID {
+		return false
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	var role string
+	if err := tx.QueryRow(`SELECT role FROM memberships
+		WHERE campaign_id = ? AND account_id = ?`, campaignID, ownerID).Scan(&role); err != nil ||
+		role != api.RoleOwner {
+		return false
+	}
+	if err := tx.QueryRow(`SELECT role FROM memberships
+		WHERE campaign_id = ? AND account_id = ?`, campaignID, targetID).Scan(&role); err != nil {
+		return false
+	}
+	if _, err := tx.Exec(`UPDATE memberships SET role = ?
+		WHERE campaign_id = ? AND account_id = ?`, api.RoleOwner, campaignID, targetID); err != nil {
+		return false
+	}
+	if _, err := tx.Exec(`UPDATE memberships SET role = ?
+		WHERE campaign_id = ? AND account_id = ?`, api.RoleMaster, campaignID, ownerID); err != nil {
+		return false
+	}
+	return tx.Commit() == nil
+}
+
 func validRole(role string) bool {
 	switch role {
 	case api.RoleOwner, api.RoleMaster, api.RolePlayer, api.RoleObserver:

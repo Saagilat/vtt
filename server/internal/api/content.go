@@ -179,6 +179,7 @@ type Content interface {
 	DeleteNote(campaignID, noteID string) bool
 	SetMemberRole(campaignID, accountID, role string) bool
 	RemoveMember(campaignID, accountID string) bool
+	TransferOwnership(campaignID, ownerID, targetID string) bool
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.
@@ -945,4 +946,47 @@ func (s *server) removeMember(w http.ResponseWriter, r *http.Request) {
 	s.broadcastMembersChanged(campaign.ID, targetID, "", true, account)
 	s.hub.room(campaign.ID).closeAccount(targetID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) transferOwnership(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	if campaign.Role != RoleOwner {
+		writeError(w, http.StatusForbidden, "forbidden", "владельца назначает владелец")
+		return
+	}
+	var req struct {
+		AccountID string `json:"account_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.AccountID == "" || req.AccountID == account.ID {
+		writeError(w, http.StatusBadRequest, "bad_request", "выберите другого участника")
+		return
+	}
+	if _, ok := s.content.Campaign(req.AccountID, campaign.ID); !ok {
+		writeError(w, http.StatusNotFound, "not_found", "участника нет")
+		return
+	}
+	if !s.content.TransferOwnership(campaign.ID, account.ID, req.AccountID) {
+		writeError(w, http.StatusConflict, "conflict", "владение не передалось")
+		return
+	}
+	room := s.hub.room(campaign.ID)
+	room.setAccountRole(req.AccountID, RoleOwner)
+	room.setAccountRole(account.ID, RoleMaster)
+	s.broadcastMembersChanged(campaign.ID, req.AccountID, RoleOwner, false, account)
+	s.broadcastMembersChanged(campaign.ID, account.ID, RoleMaster, false, account)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"account_id": req.AccountID,
+		"role":       RoleOwner,
+	})
 }

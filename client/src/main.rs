@@ -387,6 +387,7 @@ struct App {
     note_private: bool,
     new_note_title: String,
     new_note_private: bool,
+    confirm_owner: Option<String>,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
     chat_channel: String,
@@ -491,6 +492,7 @@ impl App {
             note_private: false,
             new_note_title: String::new(),
             new_note_private: false,
+            confirm_owner: None,
             visibility: None,
             pending_visibility: None,
             fog_texture: None,
@@ -677,6 +679,7 @@ impl App {
         self.texture = None;
         self.pending_image = None;
         self.invite_code.clear();
+        self.confirm_owner = None;
         self.token_owner.clear();
         self.preview_account.clear();
         self.preview_name = None;
@@ -742,6 +745,24 @@ impl App {
         ) {
             Ok(_) => {
                 self.notice = format!("роль изменена: {}", role_name(role));
+                self.refresh_campaign_detail();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn transfer_ownership(&mut self, account_id: &str) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.post_json::<Value>(
+            &format!("/v1/campaigns/{}/owner", campaign.id),
+            serde_json::json!({"account_id": account_id}),
+        ) {
+            Ok(_) => {
+                self.confirm_owner = None;
+                self.notice = "владение кампанией передано".to_string();
                 self.refresh_campaign_detail();
             }
             Err(error) => self.error = error,
@@ -1530,6 +1551,9 @@ impl App {
                             if ui.small_button("убрать").clicked() {
                                 remove = Some(member.id.clone());
                             }
+                            if ui.small_button("владелец").clicked() {
+                                self.confirm_owner = Some(member.id.clone());
+                            }
                         } else {
                             ui.weak(role_name(&member.role));
                         }
@@ -1541,6 +1565,25 @@ impl App {
             }
             if let Some(id) = remove {
                 self.remove_member(&id);
+            }
+            if let Some(id) = self.confirm_owner.clone() {
+                let login = members
+                    .iter()
+                    .find(|member| member.id == id)
+                    .map(|member| member.login.clone())
+                    .unwrap_or_else(|| "участник".to_string());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Передать владение {login}?"))
+                            .color(WARM_DANGER),
+                    );
+                    if accent_button(ui, "Да", 80.0).clicked() {
+                        self.transfer_ownership(&id);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        self.confirm_owner = None;
+                    }
+                });
             }
         }
         ui.add_space(10.0);

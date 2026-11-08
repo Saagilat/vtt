@@ -908,6 +908,99 @@ func TestMemberRolesREST(t *testing.T) {
 	}
 }
 
+func TestTransferOwnership(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	if !db.TransferOwnership(campaign.ID, alice.ID, bob.ID) {
+		t.Fatal("владение не передалось")
+	}
+	bobDetail, ok := db.Campaign(bob.ID, campaign.ID)
+	if !ok || bobDetail.Role != api.RoleOwner {
+		t.Fatalf("новый владелец: %+v", bobDetail)
+	}
+	aliceDetail, ok := db.Campaign(alice.ID, campaign.ID)
+	if !ok || aliceDetail.Role != api.RoleMaster {
+		t.Fatalf("прежний владелец: %+v", aliceDetail)
+	}
+	if db.TransferOwnership(campaign.ID, alice.ID, bob.ID) {
+		t.Fatal("передал не-владелец")
+	}
+	if !db.TransferOwnership(campaign.ID, bob.ID, alice.ID) {
+		t.Fatal("владение не вернулось")
+	}
+}
+
+func TestTransferOwnershipREST(t *testing.T) {
+	handler, db, account := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Вечер"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bobAccount.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, handler, "bob", "пароль")
+
+	transfer := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/owner",
+		strings.NewReader(`{"account_id":"`+bobAccount.ID+`"}`))
+	transfer.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, transfer)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("передача владения: %d %s", rec.Code, rec.Body)
+	}
+	if detail, ok := db.Campaign(bobAccount.ID, campaign.ID); !ok || detail.Role != api.RoleOwner {
+		t.Fatalf("новый владелец: %+v", detail)
+	}
+	if detail, ok := db.Campaign(account.ID, campaign.ID); !ok || detail.Role != api.RoleMaster {
+		t.Fatalf("прежний владелец: %+v", detail)
+	}
+
+	again := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/owner",
+		strings.NewReader(`{"account_id":"`+account.ID+`"}`))
+	again.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, again)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("не-владелец передал кампанию: %d %s", rec.Code, rec.Body)
+	}
+
+	back := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/owner",
+		strings.NewReader(`{"account_id":"`+account.ID+`"}`))
+	back.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, back)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("возврат владения: %d %s", rec.Code, rec.Body)
+	}
+	if detail, ok := db.Campaign(account.ID, campaign.ID); !ok || detail.Role != api.RoleOwner {
+		t.Fatalf("владение не вернулось: %+v", detail)
+	}
+}
+
 func TestInviteJoinByCode(t *testing.T) {
 	handler, db, account := newContentHandler(t)
 	alice := login(t, handler, "alice", "пароль")

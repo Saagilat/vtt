@@ -137,6 +137,7 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("PATCH /v1/campaigns/{id}/members/{account}", s.updateMember)
 		mux.HandleFunc("PUT /v1/campaigns/{id}/members/{account}", s.updateMember)
 		mux.HandleFunc("DELETE /v1/campaigns/{id}/members/{account}", s.removeMember)
+		mux.HandleFunc("POST /v1/campaigns/{id}/owner", s.transferOwnership)
 		mux.HandleFunc("POST /v1/campaigns/{id}/images", s.uploadImage)
 		mux.HandleFunc("GET /v1/campaigns/{id}/images/{iid}", s.getImage)
 		mux.HandleFunc("POST /v1/campaigns/{id}/scenes:import", s.importScene)
