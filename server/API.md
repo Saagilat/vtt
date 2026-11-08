@@ -110,8 +110,8 @@ DELETE /v1/sessions/current → 204, тела нет
 | `PATCH /v1/campaigns/{id}/characters/{cid}` | владелец листа, мастер | `{"name", "data"}` — лист целиком |
 
 `data` — JSON-объект с полями листа. Сейчас клиент использует `class`, `level`, `hp`,
-`max_hp`, `abilities` (`str`, `dex`, `con`, `int`, `wis`, `cha`), `inventory`, `spells`,
-`notes`, но сервер схему полей не навязывает: она меняется без миграции.
+`max_hp`, `abilities` (`str`, `dex`, `con`, `int`, `wis`, `cha`), `saves`, `skills`,
+`inventory`, `spells`, `notes`, но сервер схему полей не навязывает: она меняется без миграции.
 Ответ листа: `id`, `name`, `owner_id`, `owner_login`, `data`, `approved`.
 `POST` без `owner_id` создаёт лист текущего человека; мастер может передать `owner_id`
 любого участника. `PATCH` заменяет `data` целиком, а не отдельные поля. Игрок правит только

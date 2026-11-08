@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -171,17 +171,61 @@ fn default_hp() -> i32 {
     10
 }
 
+const ABILITY_KEYS: [(&str, &str); 6] = [
+    ("str", "СИЛ"),
+    ("dex", "ЛОВ"),
+    ("con", "ТЕЛ"),
+    ("int", "ИНТ"),
+    ("wis", "МДР"),
+    ("cha", "ХАР"),
+];
+
+const SKILLS: [(&str, &str, &str); 18] = [
+    ("acrobatics", "Акробатика", "dex"),
+    ("animal", "Уход за животными", "wis"),
+    ("arcana", "Магия", "int"),
+    ("athletics", "Атлетика", "str"),
+    ("deception", "Обман", "cha"),
+    ("history", "История", "int"),
+    ("insight", "Проницательность", "wis"),
+    ("intimidation", "Запугивание", "cha"),
+    ("investigation", "Расследование", "int"),
+    ("medicine", "Медицина", "wis"),
+    ("nature", "Природа", "int"),
+    ("perception", "Восприятие", "wis"),
+    ("performance", "Выступление", "cha"),
+    ("persuasion", "Убеждение", "cha"),
+    ("religion", "Религия", "int"),
+    ("sleight", "Ловкость рук", "dex"),
+    ("stealth", "Скрытность", "dex"),
+    ("survival", "Выживание", "wis"),
+];
+
 fn ability_modifier(score: i32) -> i32 {
     (score - 10).div_euclid(2)
 }
 
-fn ability_formula(score: i32) -> String {
-    let modifier = ability_modifier(score);
-    if modifier == 0 {
+fn proficiency_bonus(level: i32) -> i32 {
+    2 + (level.max(1) - 1) / 4
+}
+
+fn check_formula(bonus: i32) -> String {
+    if bonus == 0 {
         "1d20".to_string()
     } else {
-        format!("1d20{modifier:+}")
+        format!("1d20{bonus:+}")
     }
+}
+
+fn ability_formula(score: i32) -> String {
+    check_formula(ability_modifier(score))
+}
+
+fn sheet_flag(data: &Value, section: &str, key: &str) -> bool {
+    data.get(section)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn sheet_ability(data: &Value, key: &str) -> i32 {
@@ -326,6 +370,8 @@ struct App {
     sheet_inventory: String,
     sheet_spells: String,
     sheet_notes: String,
+    save_profs: HashSet<String>,
+    skill_profs: HashSet<String>,
     new_character_name: String,
     notes: Vec<Note>,
     selected_note: Option<String>,
@@ -426,6 +472,8 @@ impl App {
             sheet_inventory: String::new(),
             sheet_spells: String::new(),
             sheet_notes: String::new(),
+            save_profs: HashSet::new(),
+            skill_profs: HashSet::new(),
             new_character_name: String::new(),
             notes: Vec::new(),
             selected_note: None,
@@ -844,6 +892,18 @@ impl App {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        self.save_profs.clear();
+        for (key, _) in ABILITY_KEYS {
+            if sheet_flag(&character.data, "saves", key) {
+                self.save_profs.insert(key.to_string());
+            }
+        }
+        self.skill_profs.clear();
+        for (key, _, _) in SKILLS {
+            if sheet_flag(&character.data, "skills", key) {
+                self.skill_profs.insert(key.to_string());
+            }
+        }
         self.sheet_notes = character
             .data
             .get("notes")
@@ -853,6 +913,14 @@ impl App {
     }
 
     fn sheet_data(&self) -> Value {
+        let mut saves = serde_json::Map::new();
+        for (key, _) in ABILITY_KEYS {
+            saves.insert(key.to_string(), Value::Bool(self.save_profs.contains(key)));
+        }
+        let mut skills = serde_json::Map::new();
+        for (key, _, _) in SKILLS {
+            skills.insert(key.to_string(), Value::Bool(self.skill_profs.contains(key)));
+        }
         serde_json::json!({
             "class": self.sheet_class.trim(),
             "level": self.sheet_level.max(1),
@@ -866,10 +934,39 @@ impl App {
                 "wis": self.sheet_wis.clamp(1, 30),
                 "cha": self.sheet_cha.clamp(1, 30),
             },
+            "saves": saves,
+            "skills": skills,
             "inventory": self.sheet_inventory.trim(),
             "spells": self.sheet_spells.trim(),
             "notes": self.sheet_notes.trim(),
         })
+    }
+
+    fn ability_score(&self, key: &str) -> i32 {
+        match key {
+            "str" => self.sheet_str,
+            "dex" => self.sheet_dex,
+            "con" => self.sheet_con,
+            "int" => self.sheet_int,
+            "wis" => self.sheet_wis,
+            "cha" => self.sheet_cha,
+            _ => 10,
+        }
+    }
+
+    fn roll_check(&mut self, label: &str, score: i32, proficient: bool) {
+        let mut bonus = ability_modifier(score);
+        if proficient {
+            bonus += proficiency_bonus(self.sheet_level);
+        }
+        let formula = check_formula(bonus);
+        self.roll_formula = formula.clone();
+        self.send_intent(serde_json::json!({
+            "type": "roll",
+            "formula": formula,
+            "visibility": "table",
+        }));
+        self.notice = format!("бросок {label}: {formula}");
     }
 
     fn create_character(&mut self) {
@@ -3205,6 +3302,88 @@ impl App {
                             self.roll_ability(label, score);
                         }
                     });
+                let level = self.sheet_level;
+                let saves: Vec<(&str, &str, i32, bool)> = ABILITY_KEYS
+                    .iter()
+                    .map(|(key, label)| {
+                        (
+                            *key,
+                            *label,
+                            self.ability_score(key),
+                            self.save_profs.contains(*key),
+                        )
+                    })
+                    .collect();
+                let mut save_roll = None;
+                egui::CollapsingHeader::new("Спасброски").show(ui, |ui| {
+                    for (key, label, score, proficient) in &saves {
+                        let mut prof = *proficient;
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut prof, "").changed() {
+                                if prof {
+                                    self.save_profs.insert((*key).to_string());
+                                } else {
+                                    self.save_profs.remove(*key);
+                                }
+                            }
+                            let mut bonus = ability_modifier(*score);
+                            if prof {
+                                bonus += proficiency_bonus(level);
+                            }
+                            if ui
+                                .small_button(format!("{label}  d20 {bonus:+}"))
+                                .on_hover_text(format!("спасбросок {label}"))
+                                .clicked()
+                            {
+                                save_roll = Some((*label, *score, prof));
+                            }
+                        });
+                    }
+                });
+                if let Some((label, score, proficient)) = save_roll {
+                    self.roll_check(label, score, proficient);
+                }
+                let skills: Vec<(&str, &str, &str, i32, bool)> = SKILLS
+                    .iter()
+                    .map(|(key, label, ability)| {
+                        (
+                            *key,
+                            *label,
+                            *ability,
+                            self.ability_score(ability),
+                            self.skill_profs.contains(*key),
+                        )
+                    })
+                    .collect();
+                let mut skill_roll = None;
+                egui::CollapsingHeader::new("Навыки").show(ui, |ui| {
+                    for (key, label, _, score, proficient) in &skills {
+                        let mut prof = *proficient;
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut prof, "").changed() {
+                                if prof {
+                                    self.skill_profs.insert((*key).to_string());
+                                } else {
+                                    self.skill_profs.remove(*key);
+                                }
+                            }
+                            let mut bonus = ability_modifier(*score);
+                            if prof {
+                                bonus += proficiency_bonus(level);
+                            }
+                            if ui
+                                .small_button(format!("{label}  d20 {bonus:+}"))
+                                .on_hover_text(format!("проверка {label}"))
+                                .clicked()
+                            {
+                                skill_roll = Some((*label, *score, prof));
+                            }
+                        });
+                    }
+                });
+                if let Some((label, score, proficient)) = skill_roll {
+                    self.roll_check(label, score, proficient);
+                }
                 egui::CollapsingHeader::new("Инвентарь").show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.sheet_inventory)
@@ -3658,6 +3837,24 @@ mod tests {
         assert_eq!(ability_formula(10), "1d20");
         assert_eq!(ability_formula(16), "1d20+3");
         assert_eq!(ability_formula(8), "1d20-1");
+        assert_eq!(proficiency_bonus(1), 2);
+        assert_eq!(proficiency_bonus(5), 3);
+        assert_eq!(proficiency_bonus(9), 4);
+        assert_eq!(proficiency_bonus(17), 6);
+        assert_eq!(check_formula(0), "1d20");
+        assert_eq!(check_formula(5), "1d20+5");
+    }
+
+    #[test]
+    fn sheet_flags_read_proficiencies() {
+        let data = serde_json::json!({
+            "saves": {"dex": true, "wis": false},
+            "skills": {"stealth": true}
+        });
+        assert!(sheet_flag(&data, "saves", "dex"));
+        assert!(!sheet_flag(&data, "saves", "wis"));
+        assert!(sheet_flag(&data, "skills", "stealth"));
+        assert!(!sheet_flag(&data, "skills", "perception"));
     }
 
     #[test]
