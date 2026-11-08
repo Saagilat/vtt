@@ -34,4 +34,5 @@ dist/
 scripts/experiments/**/out/
 scripts/experiments/**/review/
 scripts/experiments/**/models/
-scripts/experiments/map_layout/results/
+scripts/experiments/**/results/
+scripts/experiments/**/cases/

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-# Стенд подготовки карты: есть ли на карте напечатанная сетка и можно ли её стереть.
+# Стенд разметчика: есть ли на карте напечатанная сетка и где проходят линии.
 #
 # Инструмент эксперимента, не проект: в пакеты не едет, карты мастера в git не кладутся.
-# Результат — папка review: исходник, наложение и (если сетка подтверждена) стёртая карта,
-# по номеру на карту. Рядом summary.txt: номер, файл, вердикт и причина.
+# Результат — папка на карту: исходник, наложение, grid.json с геометрией и report.txt.
 #
 # Сетка ищется по среднему профилю яркости. Период сначала грубо находится по FFT (это ловит
 # бледную сетку, которую перебор целых шагов теряет), потом шаг и сдвиг уточняются дробно.
@@ -13,9 +12,10 @@
 # Красные линии — только подтверждённая сетка; оранжевые — кандидаты, которые отклонены.
 #
 # Использование:
-#   python3 scripts/experiments/map_layout/grid.py --in 'тестовый материал' --erase
+#   python3 scripts/experiments/annotator/grid.py --in 'тестовый материал'
 
 import argparse
+import json
 import pathlib
 import shutil
 import sys
@@ -249,93 +249,93 @@ def draw_overlay(image, title, vertical, horizontal, is_grid, notes):
     return result
 
 
-def erase(rgb, vertical, horizontal):
-    out = rgb.astype(np.float32).copy()
-    for det, axis in ((vertical, 'v'), (horizontal, 'h')):
-        if det is None:
-            continue
-        half = max(1, det['width'] // 2 + 1)
-        if axis == 'v':
-            for c in positions(det['offset'], det['step'], out.shape[1]):
-                left, right = c - half - 1, c + half + 1
-                if left < 0 or right >= out.shape[1]:
-                    continue
-                t = np.linspace(0.0, 1.0, 2 * half + 3)[1:-1]
-                out[:, c - half:c + half + 1, :] = (out[:, left][:, None, :] * (1 - t)[None, :, None]
-                                                    + out[:, right][:, None, :] * t[None, :, None])
-        else:
-            for r in positions(det['offset'], det['step'], out.shape[0]):
-                up, down = r - half - 1, r + half + 1
-                if up < 0 or down >= out.shape[0]:
-                    continue
-                t = np.linspace(0.0, 1.0, 2 * half + 3)[1:-1]
-                out[r - half:r + half + 1, :, :] = (out[up, :, :][None, :, :] * (1 - t)[:, None, None]
-                                                    + out[down, :, :][None, :, :] * t[:, None, None])
-    return np.clip(out, 0.0, 255.0).astype(np.uint8)
+def describe(det, gray, axis):
+    if det is None:
+        return None
+    result = {}
+    for key in ('step', 'offset', 'drop', 'width'):
+        value = det[key]
+        result[key] = float(value) if isinstance(value, (np.floating, np.integer)) else value
+    result['verdict'] = det['verdict']
+    centers = refine_centers(profile(gray, axis=axis), det)
+    result['centers'] = [round(float(c), 2) for c in centers]
+    return result
 
 
-def process(path, review_dir, number, step_min, step_max, do_erase):
+def analyze(path, step_min=16, step_max=256):
     image = Image.open(path).convert('RGB')
     gray = np.asarray(image.convert('L'), dtype=np.float32)
     vertical = detect(profile(gray, axis=0), step_min, step_max)
     horizontal = detect(profile(gray, axis=1), step_min, step_max)
     is_grid, notes = combined(vertical, horizontal)
+    return image, {
+        'image': {'file': path.name, 'width': image.size[0], 'height': image.size[1]},
+        'vertical': describe(vertical, gray, axis=0),
+        'horizontal': describe(horizontal, gray, axis=1),
+        'is_grid': is_grid,
+        'notes': notes,
+    }
 
-    prefix = str(number).zfill(2)
-    shutil.copyfile(path, review_dir / (prefix + '-original' + path.suffix.lower()))
-    overlay = draw_overlay(image, prefix + ': ' + path.name, vertical, horizontal, is_grid, notes)
-    overlay.save(review_dir / (prefix + '-grid.png'))
-    erased_name = '-'
-    if do_erase and is_grid:
-        erased_path = review_dir / (prefix + '-erased.png')
-        Image.fromarray(erase(np.asarray(image, dtype=np.float32), vertical, horizontal)).save(erased_path)
-        erased_name = erased_path.name
 
-    verdict_text = ('сетка подтверждена: ' if is_grid else 'сетка не подтверждена: ') + '; '.join(notes)
-    for label, det in (('верт', vertical), ('гор', horizontal)):
+def process(path, out_root, step_min, step_max):
+    image, result = analyze(path, step_min, step_max)
+    name = path.parent.name if path.stem == 'original' else path.stem
+    out_dir = out_root / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, out_dir / ('original' + path.suffix.lower()))
+
+    verdict = 'сетка подтверждена' if result['is_grid'] else 'сетка не подтверждена'
+    title = path.name + ' — ' + verdict
+    overlay = draw_overlay(image, title, result['vertical'], result['horizontal'],
+                           result['is_grid'], result['notes'])
+    overlay.save(out_dir / 'grid.png')
+    (out_dir / 'grid.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + chr(10),
+                                       encoding='utf-8')
+
+    lines = [title]
+    for label, det in (('вертикали', result['vertical']), ('горизонтали', result['horizontal'])):
         if det is None:
-            print('  ' + label + ': кандидатов нет')
+            lines.append('  ' + label + ': кандидатов нет')
         else:
-            print('  ' + label + ': шаг ' + str(det['step']) + ', сдвиг ' + str(det['offset'])
-                  + ', провал ' + str(round(det['drop'], 1)) + ', толщина ' + str(det['width'])
-                  + ' → ' + det['verdict'])
-    print('  ' + verdict_text)
-
-    return (prefix + '  ' + path.name + '  ' + str(image.size[0]) + 'x' + str(image.size[1])
-            + '  ' + verdict_text + '  стёрто: ' + erased_name)
+            lines.append('  ' + label + ': шаг %.2f, сдвиг %.1f, толщина %d, провал %.1f — %s'
+                         % (det['step'], det['offset'], det['width'], det['drop'], det['verdict']))
+    lines.append('  вердикт: ' + verdict + ' — ' + '; '.join(result['notes']))
+    (out_dir / 'report.txt').write_text(chr(10).join(lines) + chr(10), encoding='utf-8')
+    print(chr(10).join(lines))
+    print('')
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description='Стенд: есть ли напечатанная сетка')
     parser.add_argument('--in', dest='source', required=True, help='картинка или каталог')
-    parser.add_argument('--review', dest='review', default='scripts/experiments/map_layout/review')
+    parser.add_argument('--out', dest='out', default='scripts/experiments/annotator/results',
+                        help='каталог результатов: на карту — своя папка')
     parser.add_argument('--step-min', type=int, default=16)
     parser.add_argument('--step-max', type=int, default=256)
-    parser.add_argument('--erase', action='store_true', help='стереть найденную сетку по соседям')
     args = parser.parse_args()
 
     source = pathlib.Path(args.source)
     if source.is_dir():
-        files = [p for p in sorted(source.iterdir()) if p.suffix.lower() in IMAGE_SUFFIXES]
+        files = [p for p in sorted(source.rglob('*')) if p.suffix.lower() in IMAGE_SUFFIXES]
     else:
         files = [source]
     if not files:
         print('нет картинок: ' + str(source), file=sys.stderr)
         return 1
 
-    review_dir = pathlib.Path(args.review)
-    review_dir.mkdir(parents=True, exist_ok=True)
-    for old in review_dir.iterdir():
-        if old.is_file():
-            old.unlink()
-
+    out_root = pathlib.Path(args.out)
+    out_root.mkdir(parents=True, exist_ok=True)
     summary = []
-    for number, path in enumerate(files, start=1):
-        print(str(number) + '. ' + path.name)
-        summary.append(process(path, review_dir, number, args.step_min, args.step_max, args.erase))
-        print('')
+    for path in files:
+        print(path.name)
+        result = process(path, out_root, args.step_min, args.step_max)
+        summary.append(path.name + '  ' + str(result['image']['width']) + 'x'
+                       + str(result['image']['height']) + '  '
+                       + ('подтверждена' if result['is_grid'] else 'не подтверждена')
+                       + ' — ' + '; '.join(result['notes']))
 
-    summary_path = review_dir / 'summary.txt'
+    summary_path = out_root / 'summary.txt'
     summary_path.write_text(chr(10).join(summary) + chr(10), encoding='utf-8')
     print('итог: ' + str(summary_path))
     return 0
