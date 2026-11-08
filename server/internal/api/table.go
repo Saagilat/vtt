@@ -56,6 +56,7 @@ type tableMessage struct {
 	Type       string  `json:"type"`
 	Text       string  `json:"text,omitempty"`
 	Channel    string  `json:"channel,omitempty"`
+	To         string  `json:"to,omitempty"`
 	IntentID   string  `json:"intent_id,omitempty"`
 	TokenID    string  `json:"token_id,omitempty"`
 	SceneID    string  `json:"scene_id,omitempty"`
@@ -112,6 +113,27 @@ func (r *tableRoom) snapshot() []tableClientConn {
 	out := make([]tableClientConn, 0, len(r.clients))
 	for conn, who := range r.clients {
 		out = append(out, tableClientConn{conn: conn, who: who})
+	}
+	return out
+}
+
+// chatHistory оставляет только то, что человек вправе видеть.
+func (s *server) chatHistory(campaignID, accountID, role string) []ChatMessage {
+	all := s.content.ChatMessages(campaignID, 50)
+	out := make([]ChatMessage, 0, len(all))
+	for _, message := range all {
+		switch message.Channel {
+		case "table":
+			out = append(out, message)
+		case "master":
+			if master(role) || message.Actor.ID == accountID {
+				out = append(out, message)
+			}
+		case "whisper":
+			if message.Actor.ID == accountID || message.ToAccountID == accountID {
+				out = append(out, message)
+			}
+		}
 	}
 	return out
 }
@@ -300,7 +322,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"round":    turnRound,
 			},
 			"visibility": visibility,
-			"chat":       s.content.ChatMessages(campaign.ID, 50),
+			"chat":       s.chatHistory(campaign.ID, account.ID, campaign.Role),
 		},
 		"actions": actions,
 	}
@@ -340,7 +362,36 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			if channel == "" {
 				channel = "table"
 			}
-			stored, ok := s.content.AddChatMessage(campaign.ID, account.ID, text, channel)
+			toAccountID := ""
+			switch channel {
+			case "table", "master":
+			case "whisper":
+				toAccountID = message.To
+				if toAccountID == "" {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "bad_request", "message": "кому шёпот?"},
+					})
+					continue
+				}
+				if _, ok := s.content.Campaign(toAccountID, campaign.ID); !ok {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "bad_request", "message": "получатель не в кампании"},
+					})
+					continue
+				}
+			default:
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "незнакомый канал чата"},
+				})
+				continue
+			}
+			stored, ok := s.content.AddChatMessage(campaign.ID, account.ID, toAccountID, text, channel)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -349,16 +400,32 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			seq := room.nextSeq()
-			room.broadcast(map[string]any{
+			event := map[string]any{
 				"type":       "chat.said",
-				"seq":        seq,
+				"seq":        room.nextSeq(),
 				"time":       s.now().UTC().Format(time.RFC3339),
 				"message_id": stored.ID,
 				"text":       text,
 				"channel":    channel,
 				"actor":      account,
-			})
+			}
+			if toAccountID != "" {
+				if target, ok := s.dir.ByID(toAccountID); ok {
+					event["to"] = target
+				}
+			}
+			switch channel {
+			case "master":
+				room.broadcastIf(event, func(who tableClient) bool {
+					return master(who.role) || who.account.ID == account.ID
+				})
+			case "whisper":
+				room.broadcastIf(event, func(who tableClient) bool {
+					return who.account.ID == toAccountID || who.account.ID == account.ID
+				})
+			default:
+				room.broadcast(event)
+			}
 		case "roll":
 			result, err := parseRoll(message.Formula)
 			if err != nil {

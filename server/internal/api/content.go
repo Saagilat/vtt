@@ -73,11 +73,13 @@ type Invite struct {
 
 // ChatMessage — сохранённое сообщение стола.
 type ChatMessage struct {
-	ID        string  `json:"id"`
-	Text      string  `json:"text"`
-	Channel   string  `json:"channel"`
-	CreatedAt string  `json:"created_at"`
-	Actor     Account `json:"actor"`
+	ID          string  `json:"id"`
+	Text        string  `json:"text"`
+	Channel     string  `json:"channel"`
+	ToAccountID string  `json:"to_account_id,omitempty"`
+	ToLogin     string  `json:"to_login,omitempty"`
+	CreatedAt   string  `json:"created_at"`
+	Actor       Account `json:"actor"`
 }
 
 // TokenPatch — изменение характеристик фишки. nil значит «не трогать».
@@ -137,7 +139,7 @@ type Content interface {
 	SetSceneLight(campaignID, sceneID, light string) bool
 	Turn(campaignID, sceneID string) (tokenID string, round int)
 	SetTurn(campaignID, sceneID, tokenID string, round int) bool
-	AddChatMessage(campaignID, accountID, text, channel string) (ChatMessage, bool)
+	AddChatMessage(campaignID, accountID, toAccountID, text, channel string) (ChatMessage, bool)
 	ChatMessages(campaignID string, limit int) []ChatMessage
 }
 

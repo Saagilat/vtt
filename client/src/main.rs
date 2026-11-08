@@ -217,6 +217,9 @@ struct App {
     invite_code: String,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
+    chat_channel: String,
+    chat_to: String,
+    chat_to_login: String,
     chat_lines: Vec<String>,
     chat_status: String,
     tokens: Vec<Token>,
@@ -276,6 +279,9 @@ impl App {
             invite_code: String::new(),
             chat_rx: None,
             chat_input: String::new(),
+            chat_channel: "table".to_string(),
+            chat_to: String::new(),
+            chat_to_login: String::new(),
             chat_lines: Vec::new(),
             chat_status: String::new(),
             tokens: Vec::new(),
@@ -448,6 +454,9 @@ impl App {
         self.token_owner.clear();
         self.preview_account.clear();
         self.preview_name = None;
+        self.chat_channel = "table".to_string();
+        self.chat_to.clear();
+        self.chat_to_login.clear();
         self.panel_tab = PanelTab::Chat;
         self.hint_dismissed = false;
         match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
@@ -1904,7 +1913,20 @@ impl App {
                                         .filter_map(|item| {
                                             let login = item["actor"]["login"].as_str()?;
                                             let text = item["text"].as_str()?;
-                                            Some(format!("{login}: {text}"))
+                                            let channel =
+                                                item["channel"].as_str().unwrap_or("table");
+                                            let line = match channel {
+                                                "master" => {
+                                                    format!("{login} → мастеру: {text}")
+                                                }
+                                                "whisper" => {
+                                                    let to =
+                                                        item["to_login"].as_str().unwrap_or("?");
+                                                    format!("{login} → {to}: {text}")
+                                                }
+                                                _ => format!("{login}: {text}"),
+                                            };
+                                            Some(line)
                                         })
                                         .collect();
                                     let _ = sender.send(ChatEvent::History(lines));
@@ -1913,7 +1935,16 @@ impl App {
                             Some("chat.said") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
                                 let body = value["text"].as_str().unwrap_or("");
-                                let _ = sender.send(ChatEvent::Message(format!("{actor}: {body}")));
+                                let channel = value["channel"].as_str().unwrap_or("table");
+                                let line = match channel {
+                                    "master" => format!("{actor} → мастеру: {body}"),
+                                    "whisper" => {
+                                        let to = value["to"]["login"].as_str().unwrap_or("?");
+                                        format!("{actor} → {to}: {body}")
+                                    }
+                                    _ => format!("{actor}: {body}"),
+                                };
+                                let _ = sender.send(ChatEvent::Message(line));
                             }
                             Some("scene.shown") => {
                                 if let Ok(scene) =
@@ -2182,8 +2213,20 @@ impl App {
         if text.is_empty() {
             return;
         }
+        if self.chat_channel == "whisper" && self.chat_to.is_empty() {
+            self.notice = "шёпот: выберите получателя".to_string();
+            return;
+        }
         self.chat_input.clear();
-        self.send_intent(serde_json::json!({"type": "chat.say", "text": text}));
+        let mut payload = serde_json::json!({
+            "type": "chat.say",
+            "text": text,
+            "channel": self.chat_channel,
+        });
+        if self.chat_channel == "whisper" {
+            payload["to"] = Value::String(self.chat_to.clone());
+        }
+        self.send_intent(payload);
     }
 
     fn place_token(&mut self) {
@@ -2330,6 +2373,59 @@ impl App {
                     }
                 });
             ui.separator();
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(self.chat_channel == "table", "Стол")
+                    .clicked()
+                {
+                    self.chat_channel = "table".to_string();
+                }
+                if ui
+                    .selectable_label(self.chat_channel == "master", "Мастеру")
+                    .clicked()
+                {
+                    self.chat_channel = "master".to_string();
+                }
+                if ui
+                    .selectable_label(self.chat_channel == "whisper", "Шёпот")
+                    .clicked()
+                {
+                    self.chat_channel = "whisper".to_string();
+                }
+            });
+            if self.chat_channel == "whisper" {
+                let members = self
+                    .campaign_detail
+                    .as_ref()
+                    .map(|detail| detail.members.clone())
+                    .unwrap_or_default();
+                let selected = if self.chat_to_login.is_empty() {
+                    "кому".to_string()
+                } else {
+                    self.chat_to_login.clone()
+                };
+                egui::ComboBox::from_label("получатель")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for member in &members {
+                            let mine = self
+                                .account
+                                .as_ref()
+                                .map(|account| account.id == member.id)
+                                .unwrap_or(false);
+                            if !mine {
+                                ui.selectable_value(
+                                    &mut self.chat_to,
+                                    member.id.clone(),
+                                    member.login.clone(),
+                                );
+                            }
+                        }
+                    });
+                if let Some(member) = members.iter().find(|member| member.id == self.chat_to) {
+                    self.chat_to_login = member.login.clone();
+                }
+            }
             ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.chat_input)

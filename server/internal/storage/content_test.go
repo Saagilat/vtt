@@ -517,16 +517,24 @@ func TestChatHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, ok := db.AddChatMessage(campaign.ID, alice.ID, "первое", "table")
+	first, ok := db.AddChatMessage(campaign.ID, alice.ID, "", "первое", "table")
 	if !ok {
 		t.Fatal("первое сообщение не сохранилось")
 	}
-	second, ok := db.AddChatMessage(campaign.ID, alice.ID, "второе", "table")
+	second, ok := db.AddChatMessage(campaign.ID, alice.ID, "", "второе", "table")
 	if !ok {
 		t.Fatal("второе сообщение не сохранилось")
 	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	whisper, ok := db.AddChatMessage(campaign.ID, alice.ID, bob.ID, "тихо", "whisper")
+	if !ok || whisper.ToLogin != "bob" {
+		t.Fatalf("шёпот: %+v", whisper)
+	}
 	items := db.ChatMessages(campaign.ID, 10)
-	if len(items) != 2 || items[0].ID != first.ID || items[1].ID != second.ID {
+	if len(items) != 3 || items[0].ID != first.ID || items[1].ID != second.ID {
 		t.Fatalf("история: %+v", items)
 	}
 	if items[0].Actor.Login != "alice" {
