@@ -80,18 +80,104 @@ def paste_grid(base, layer):
     return image.convert('RGB')
 
 
-def annotation(width, height, grid):
+def draw_areas(image, areas):
+    layer = image.convert('RGBA')
+    draw = ImageDraw.Draw(layer)
+    colors = {'water': (60, 120, 200, 70), 'lava': (220, 80, 40, 80),
+              'difficult': (110, 80, 40, 60), 'unknown': (120, 120, 120, 60)}
+    for area in areas:
+        points = [tuple(point) for point in area['polygon']]
+        draw.polygon(points, fill=colors.get(area['type'], colors['unknown']),
+                     outline=(40, 40, 40, 160), width=3)
+    return layer.convert('RGB')
+
+
+def draw_walls(image, walls, width=6):
+    layer = image.convert('RGBA')
+    draw = ImageDraw.Draw(layer)
+    for wall in walls:
+        points = [tuple(point) for point in wall['points']]
+        draw.line(points, fill=(35, 28, 22, 230), width=width, joint='curve')
+        for point in points:
+            draw.ellipse([point[0] - width // 2, point[1] - width // 2,
+                          point[0] + width // 2, point[1] + width // 2],
+                         fill=(35, 28, 22, 230))
+    return layer.convert('RGB')
+
+
+def annotation(width, height, grid, walls=None, doors=None, areas=None):
     return {
         'format_version': 1,
         'image': {'width': width, 'height': height},
         'grid': grid,
-        'walls': [],
-        'doors': [],
-        'areas': [],
+        'walls': walls or [],
+        'doors': doors or [],
+        'areas': areas or [],
     }
 
 
+ROOM_WALLS = [
+    {'id': 'w1', 'points': [[100, 100], [1900, 100], [1900, 1400], [100, 1400], [100, 100]]},
+    {'id': 'w2', 'points': [[735, 100], [735, 800]]},
+    {'id': 'w3', 'points': [[735, 800], [1435, 800]]},
+    {'id': 'w4', 'points': [[1435, 800], [1435, 1400]]},
+]
+ROOM_DOORS = [
+    {'id': 'd1', 'wall_id': 'w1', 'from': [600, 100], 'to': [670, 100], 'type': 'normal'},
+    {'id': 'd2', 'wall_id': 'w2', 'from': [735, 400], 'to': [735, 470], 'type': 'secret'},
+    {'id': 'd3', 'wall_id': 'w3', 'from': [1000, 800], 'to': [1070, 800], 'type': 'opening'},
+]
+ROOM_AREAS = [
+    {'id': 'a1', 'type': 'water',
+     'polygon': [[1200, 900], [1500, 900], [1500, 1200], [1200, 1200], [1200, 900]]},
+    {'id': 'a2', 'type': 'difficult',
+     'polygon': [[200, 950], [600, 950], [600, 1300], [200, 1300], [200, 950]]},
+]
+CAVE_WALLS = [
+    {'id': 'w1', 'points': [[120, 200], [300, 140], [480, 220], [640, 160], [820, 260],
+                            [980, 200], [1120, 300], [1300, 240], [1480, 330], [1650, 280],
+                            [1820, 380]]},
+    {'id': 'w2', 'points': [[120, 200], [160, 420], [120, 650], [200, 900], [150, 1150],
+                            [250, 1350]]},
+    {'id': 'w3', 'points': [[250, 1350], [500, 1300], [760, 1370], [1000, 1290], [1240, 1360],
+                            [1480, 1300], [1700, 1360]]},
+    {'id': 'w4', 'points': [[1820, 380], [1780, 620], [1840, 860], [1790, 1100], [1700, 1360]]},
+]
+CAVE_AREAS = [
+    {'id': 'a1', 'type': 'lava',
+     'polygon': [[900, 700], [1200, 650], [1400, 820], [1250, 1050], [950, 980], [900, 700]]},
+]
+
 CASES = (
+    {
+        'name': 'rooms-square',
+        'prototype_supports_grid': True,
+        'grid': {'mode': 'square', 'origin': [35, 35], 'square': {'side_px': 70}},
+        'kind': 'square',
+        'side': 70,
+        'origin': [35, 35],
+        'strength': 55,
+        'walls': ROOM_WALLS,
+        'doors': ROOM_DOORS,
+        'areas': ROOM_AREAS,
+    },
+    {
+        'name': 'rooms-no-grid',
+        'prototype_supports_grid': True,
+        'grid': {'mode': 'none'},
+        'kind': 'none',
+        'walls': ROOM_WALLS,
+        'doors': ROOM_DOORS,
+        'areas': ROOM_AREAS,
+    },
+    {
+        'name': 'cave',
+        'prototype_supports_grid': True,
+        'grid': {'mode': 'none'},
+        'kind': 'none',
+        'walls': CAVE_WALLS,
+        'areas': CAVE_AREAS,
+    },
     {
         'name': 'square-70',
         'prototype_supports_grid': True,
@@ -100,6 +186,15 @@ CASES = (
         'side': 70,
         'origin': [35, 35],
         'strength': 60,
+    },
+    {
+        'name': 'square-70-dark',
+        'prototype_supports_grid': True,
+        'grid': {'mode': 'square', 'origin': [35, 35], 'square': {'side_px': 70}},
+        'kind': 'square',
+        'side': 70,
+        'origin': [35, 35],
+        'strength': 180,
     },
     {
         'name': 'square-100-faint',
@@ -143,6 +238,8 @@ def build(out_root):
     out_root.mkdir(parents=True, exist_ok=True)
     for case in CASES:
         image = Image.fromarray(ground(WIDTH, HEIGHT))
+        if case.get('areas'):
+            image = draw_areas(image, case['areas'])
         if case['kind'] == 'square':
             layer = square_grid(WIDTH, HEIGHT, case['side'], case['origin'],
                                 angle=case.get('angle', 0.0),
@@ -150,11 +247,14 @@ def build(out_root):
             image = paste_grid(image, layer)
         elif case['kind'] == 'hex':
             image = paste_grid(image, hex_grid(WIDTH, HEIGHT, case['radius'], case['origin']))
+        if case.get('walls'):
+            image = draw_walls(image, case['walls'])
 
         case_dir = out_root / case['name']
         case_dir.mkdir(parents=True, exist_ok=True)
         image.save(case_dir / 'original.png')
-        expected = annotation(WIDTH, HEIGHT, case['grid'])
+        expected = annotation(WIDTH, HEIGHT, case['grid'], case.get('walls'),
+                              case.get('doors'), case.get('areas'))
         (case_dir / 'expected.json').write_text(
             json.dumps(expected, ensure_ascii=False, indent=2) + chr(10), encoding='utf-8')
         meta = {
