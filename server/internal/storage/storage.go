@@ -662,19 +662,27 @@ func (d *DB) UpdateCharacter(campaignID, characterID, name string, data []byte) 
 func (d *DB) noteRow(query string, args ...any) (api.Note, bool) {
 	var note api.Note
 	err := d.db.QueryRow(query, args...).Scan(&note.ID, &note.Title, &note.Body,
-		&note.AuthorID, &note.AuthorLogin, &note.UpdatedAt)
+		&note.AuthorID, &note.AuthorLogin, &note.Visibility, &note.UpdatedAt)
 	if err != nil {
 		return api.Note{}, false
 	}
 	return note, true
 }
 
-// Notes — журнал кампании, свежие записи первыми.
-func (d *DB) Notes(campaignID string) []api.Note {
+func noteVisibility(value string) string {
+	if value == "private" {
+		return "private"
+	}
+	return "shared"
+}
+
+// Notes — журнал кампании, видимый человеку: общие и его личные записи.
+func (d *DB) Notes(campaignID, accountID string) []api.Note {
 	rows, err := d.db.Query(`SELECT n.id, n.title, n.body,
-		COALESCE(n.author_id, ''), COALESCE(a.login, ''), n.updated_at
+		COALESCE(n.author_id, ''), COALESCE(a.login, ''), n.visibility, n.updated_at
 		FROM notes n LEFT JOIN accounts a ON a.id = n.author_id
-		WHERE n.campaign_id = ? ORDER BY n.updated_at DESC, n.id DESC`, campaignID)
+		WHERE n.campaign_id = ? AND (n.visibility = 'shared' OR n.author_id = ?)
+		ORDER BY n.updated_at DESC, n.id DESC`, campaignID, accountID)
 	if err != nil {
 		return nil
 	}
@@ -683,7 +691,7 @@ func (d *DB) Notes(campaignID string) []api.Note {
 	for rows.Next() {
 		var note api.Note
 		if err := rows.Scan(&note.ID, &note.Title, &note.Body,
-			&note.AuthorID, &note.AuthorLogin, &note.UpdatedAt); err != nil {
+			&note.AuthorID, &note.AuthorLogin, &note.Visibility, &note.UpdatedAt); err != nil {
 			return nil
 		}
 		out = append(out, note)
@@ -694,13 +702,13 @@ func (d *DB) Notes(campaignID string) []api.Note {
 // Note — одна запись журнала.
 func (d *DB) Note(campaignID, noteID string) (api.Note, bool) {
 	return d.noteRow(`SELECT n.id, n.title, n.body,
-		COALESCE(n.author_id, ''), COALESCE(a.login, ''), n.updated_at
+		COALESCE(n.author_id, ''), COALESCE(a.login, ''), n.visibility, n.updated_at
 		FROM notes n LEFT JOIN accounts a ON a.id = n.author_id
 		WHERE n.campaign_id = ? AND n.id = ?`, campaignID, noteID)
 }
 
 // CreateNote заводит запись журнала от имени автора.
-func (d *DB) CreateNote(campaignID, authorID, title, body string) (api.Note, bool) {
+func (d *DB) CreateNote(campaignID, authorID, title, body, visibility string) (api.Note, bool) {
 	if strings.TrimSpace(title) == "" {
 		title = "Заметка"
 	}
@@ -714,22 +722,23 @@ func (d *DB) CreateNote(campaignID, authorID, title, body string) (api.Note, boo
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := d.db.Exec(`INSERT INTO notes
-		(id, campaign_id, author_id, title, body, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, campaignID, author, title, body, now, now); err != nil {
+		(id, campaign_id, author_id, title, body, visibility, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, campaignID, author, title, body, noteVisibility(visibility), now, now); err != nil {
 		return api.Note{}, false
 	}
 	return d.Note(campaignID, id)
 }
 
-// UpdateNote сохраняет заголовок и текст; права проверяет API.
-func (d *DB) UpdateNote(campaignID, noteID, title, body string) (api.Note, bool) {
+// UpdateNote сохраняет заголовок, текст и видимость; права проверяет API.
+func (d *DB) UpdateNote(campaignID, noteID, title, body, visibility string) (api.Note, bool) {
 	if strings.TrimSpace(title) == "" {
 		title = "Заметка"
 	}
-	result, err := d.db.Exec(`UPDATE notes SET title = ?, body = ?, updated_at = ?
+	result, err := d.db.Exec(`UPDATE notes SET title = ?, body = ?, visibility = ?, updated_at = ?
 		WHERE campaign_id = ? AND id = ?`,
-		title, body, time.Now().UTC().Format(time.RFC3339Nano), campaignID, noteID)
+		title, body, noteVisibility(visibility),
+		time.Now().UTC().Format(time.RFC3339Nano), campaignID, noteID)
 	if err != nil {
 		return api.Note{}, false
 	}

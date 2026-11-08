@@ -633,25 +633,39 @@ func TestNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	note, ok := db.CreateNote(campaign.ID, alice.ID, "Таверна", "Хозяин ждёт нас вечером.")
+	note, ok := db.CreateNote(campaign.ID, alice.ID, "Таверна", "Хозяин ждёт нас вечером.", "shared")
 	if !ok {
 		t.Fatal("заметка не создалась")
 	}
-	if note.AuthorLogin != "alice" || note.Title != "Таверна" {
+	if note.AuthorLogin != "alice" || note.Title != "Таверна" || note.Visibility != "shared" {
 		t.Fatalf("заметка: %+v", note)
 	}
-	updated, ok := db.UpdateNote(campaign.ID, note.ID, "Таверна", "Хозяин ждёт нас утром.")
+	updated, ok := db.UpdateNote(campaign.ID, note.ID, "Таверна", "Хозяин ждёт нас утром.", "shared")
 	if !ok || updated.Body != "Хозяин ждёт нас утром." {
 		t.Fatalf("правка заметки: %+v", updated)
 	}
-	items := db.Notes(campaign.ID)
+	items := db.Notes(campaign.ID, alice.ID)
 	if len(items) != 1 || items[0].ID != note.ID {
 		t.Fatalf("журнал: %+v", items)
+	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, ok := db.CreateNote(campaign.ID, alice.ID, "Секрет", "Только для меня.", "private")
+	if !ok || private.Visibility != "private" {
+		t.Fatalf("личная заметка: %+v", private)
+	}
+	if items := db.Notes(campaign.ID, bob.ID); len(items) != 1 || items[0].ID != note.ID {
+		t.Fatalf("чужой видит личное: %+v", items)
+	}
+	if items := db.Notes(campaign.ID, alice.ID); len(items) != 2 {
+		t.Fatalf("автор не видит своё: %+v", items)
 	}
 	if !db.DeleteNote(campaign.ID, note.ID) {
 		t.Fatal("заметка не удалилась")
 	}
-	if len(db.Notes(campaign.ID)) != 0 {
+	if len(db.Notes(campaign.ID, alice.ID)) != 1 {
 		t.Fatal("удалённая заметка осталась")
 	}
 }
@@ -732,6 +746,35 @@ func TestNotesREST(t *testing.T) {
 	var bobNote api.Note
 	if err := json.Unmarshal(rec.Body.Bytes(), &bobNote); err != nil {
 		t.Fatal(err)
+	}
+	privateRequest := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/notes",
+		strings.NewReader(`{"title":"Секрет Боба","body":"мастер не видит","visibility":"private"}`))
+	privateRequest.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, privateRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("личная заметка: %d %s", rec.Code, rec.Body)
+	}
+	var privateNote api.Note
+	if err := json.Unmarshal(rec.Body.Bytes(), &privateNote); err != nil {
+		t.Fatal(err)
+	}
+	if privateNote.Visibility != "private" {
+		t.Fatalf("видимость личной заметки: %+v", privateNote)
+	}
+	masterList := httptest.NewRequest("GET", "/v1/campaigns/"+campaign.ID+"/notes", nil)
+	masterList.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterList)
+	if strings.Contains(rec.Body.String(), "Секрет Боба") {
+		t.Fatalf("мастер видит личную заметку: %s", rec.Body)
+	}
+	bobList := httptest.NewRequest("GET", "/v1/campaigns/"+campaign.ID+"/notes", nil)
+	bobList.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, bobList)
+	if !strings.Contains(rec.Body.String(), "Секрет Боба") {
+		t.Fatalf("автор не видит личную заметку: %s", rec.Body)
 	}
 	masterPatch := httptest.NewRequest("PATCH",
 		"/v1/campaigns/"+campaign.ID+"/notes/"+bobNote.ID,

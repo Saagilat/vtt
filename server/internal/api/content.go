@@ -100,6 +100,7 @@ type Note struct {
 	Body        string `json:"body"`
 	AuthorID    string `json:"author_id,omitempty"`
 	AuthorLogin string `json:"author_login,omitempty"`
+	Visibility  string `json:"visibility"`
 	UpdatedAt   string `json:"updated_at"`
 }
 
@@ -171,10 +172,10 @@ type Content interface {
 	Character(campaignID, characterID string) (Character, bool)
 	CreateCharacter(campaignID, ownerID, name string, data []byte) (Character, bool)
 	UpdateCharacter(campaignID, characterID, name string, data []byte) (Character, bool)
-	Notes(campaignID string) []Note
+	Notes(campaignID, accountID string) []Note
 	Note(campaignID, noteID string) (Note, bool)
-	CreateNote(campaignID, authorID, title, body string) (Note, bool)
-	UpdateNote(campaignID, noteID, title, body string) (Note, bool)
+	CreateNote(campaignID, authorID, title, body, visibility string) (Note, bool)
+	UpdateNote(campaignID, noteID, title, body, visibility string) (Note, bool)
 	DeleteNote(campaignID, noteID string) bool
 }
 
@@ -710,6 +711,13 @@ func (s *server) updateCharacter(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func cleanNoteVisibility(value string) string {
+	if value == "private" {
+		return "private"
+	}
+	return "shared"
+}
+
 func noteText(title, body string) (string, string, bool) {
 	title = strings.TrimSpace(title)
 	body = strings.TrimSpace(body)
@@ -732,7 +740,7 @@ func (s *server) listNotes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
 		return
 	}
-	items := s.content.Notes(campaign.ID)
+	items := s.content.Notes(campaign.ID, account.ID)
 	if items == nil {
 		items = []Note{}
 	}
@@ -750,8 +758,9 @@ func (s *server) createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title      string `json:"title"`
+		Body       string `json:"body"`
+		Visibility string `json:"visibility"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -761,12 +770,15 @@ func (s *server) createNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "заголовок до 200, текст до 20000 байт")
 		return
 	}
-	note, ok := s.content.CreateNote(campaign.ID, account.ID, title, body)
+	note, ok := s.content.CreateNote(campaign.ID, account.ID, title, body,
+		cleanNoteVisibility(req.Visibility))
 	if !ok {
 		writeError(w, http.StatusConflict, "conflict", "заметка не создалась")
 		return
 	}
-	s.broadcastNoteChanged(campaign.ID, note, account)
+	if note.Visibility == "shared" {
+		s.broadcastNoteChanged(campaign.ID, note, account)
+	}
 	writeJSON(w, http.StatusCreated, note)
 }
 
@@ -790,8 +802,9 @@ func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title      string `json:"title"`
+		Body       string `json:"body"`
+		Visibility string `json:"visibility"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -801,12 +814,18 @@ func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "заголовок до 200, текст до 20000 байт")
 		return
 	}
-	updated, ok := s.content.UpdateNote(campaign.ID, note.ID, title, body)
+	wasShared := note.Visibility == "shared"
+	updated, ok := s.content.UpdateNote(campaign.ID, note.ID, title, body,
+		cleanNoteVisibility(req.Visibility))
 	if !ok {
 		writeError(w, http.StatusConflict, "conflict", "заметка не сохранилась")
 		return
 	}
-	s.broadcastNoteChanged(campaign.ID, updated, account)
+	if updated.Visibility == "shared" {
+		s.broadcastNoteChanged(campaign.ID, updated, account)
+	} else if wasShared {
+		s.broadcastNoteRemoved(campaign.ID, note.ID, account)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -833,6 +852,8 @@ func (s *server) deleteNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "заметка не удалилась")
 		return
 	}
-	s.broadcastNoteRemoved(campaign.ID, note.ID, account)
+	if note.Visibility == "shared" {
+		s.broadcastNoteRemoved(campaign.ID, note.ID, account)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

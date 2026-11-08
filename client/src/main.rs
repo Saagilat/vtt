@@ -100,8 +100,14 @@ struct Note {
     author_id: String,
     #[serde(default)]
     author_login: String,
+    #[serde(default = "default_visibility")]
+    visibility: String,
     #[serde(default)]
     updated_at: String,
+}
+
+fn default_visibility() -> String {
+    "shared".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -377,7 +383,9 @@ struct App {
     selected_note: Option<String>,
     note_title: String,
     note_body: String,
+    note_private: bool,
     new_note_title: String,
+    new_note_private: bool,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
     chat_channel: String,
@@ -479,7 +487,9 @@ impl App {
             selected_note: None,
             note_title: String::new(),
             note_body: String::new(),
+            note_private: false,
             new_note_title: String::new(),
+            new_note_private: false,
             visibility: None,
             pending_visibility: None,
             fog_texture: None,
@@ -1053,6 +1063,7 @@ impl App {
         self.selected_note = Some(note.id);
         self.note_title = note.title;
         self.note_body = note.body;
+        self.note_private = note.visibility == "private";
     }
 
     fn create_note(&mut self) {
@@ -1065,10 +1076,16 @@ impl App {
         } else {
             self.new_note_title.trim()
         };
-        let body = serde_json::json!({"title": title, "body": ""});
+        let visibility = if self.new_note_private {
+            "private"
+        } else {
+            "shared"
+        };
+        let body = serde_json::json!({"title": title, "body": "", "visibility": visibility});
         match self.post_json::<Note>(&format!("/v1/campaigns/{}/notes", campaign.id), body) {
             Ok(note) => {
                 self.new_note_title.clear();
+                self.new_note_private = false;
                 self.load_notes();
                 self.select_note(&note.id);
                 self.notice = format!("запись «{}» создана", note.title);
@@ -1089,7 +1106,12 @@ impl App {
                 return;
             }
         };
-        let body = serde_json::json!({"title": self.note_title, "body": self.note_body});
+        let visibility = if self.note_private {
+            "private"
+        } else {
+            "shared"
+        };
+        let body = serde_json::json!({"title": self.note_title, "body": self.note_body, "visibility": visibility});
         match self.patch_json::<Note>(&format!("/v1/campaigns/{}/notes/{}", campaign.id, id), body)
         {
             Ok(note) => {
@@ -2688,6 +2710,7 @@ impl App {
                         self.note_title.clear();
                         self.note_body.clear();
                     }
+                    self.load_notes();
                 }
                 ChatEvent::Roll(line) => self.chat_lines.push(line),
                 ChatEvent::Turn(token_id, round) => {
@@ -3453,6 +3476,9 @@ impl App {
                                 self.select_note(&note.id);
                             }
                             ui.weak(&note.author_login);
+                            if note.visibility == "private" {
+                                ui.weak("личная");
+                            }
                         });
                     }
                 });
@@ -3466,6 +3492,7 @@ impl App {
                             .is_some_and(|account| account.id == note.author_id)
                 });
                 if editable {
+                    ui.checkbox(&mut self.note_private, "только для меня");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.note_title)
                             .hint_text("заголовок")
@@ -3505,6 +3532,9 @@ impl App {
                         .hint_text("заголовок")
                         .desired_width(200.0),
                 );
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.new_note_private, "только для меня");
                 if ui.button("Создать").clicked() {
                     self.create_note();
                 }
