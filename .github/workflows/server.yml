@@ -1,0 +1,50 @@
+name: server
+
+# CI по путям (docs/projects.md, правило 4): правка в server/ запускает только его тесты,
+# а правка в contract/ — ещё и его: валидатор читает те же файлы, что и Python в разметчике.
+on:
+  push:
+    paths:
+      - 'server/**'
+      - 'contract/**'
+      - '.github/workflows/server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'contract/**'
+      - '.github/workflows/server.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+      - name: Форматирование — gofmt не находит, что менять
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "не отформатировано (нужно gofmt -w .):"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Разбор — go vet
+        run: go vet ./...
+      - name: Тесты — набор случаев контракта, пределы и пример
+        run: go test ./...
+      - name: Сборка
+        run: go build -trimpath -o vtt ./cmd/vtt
+      - name: Скелет отвечает — оба режима стартуют, незнакомый отвергается
+        run: |
+          ./vtt --version
+          ./vtt --mode=game --schema=../contract/annotation.v1.schema.json
+          ./vtt --mode=admin --schema=../contract/annotation.v1.schema.json
+          if ./vtt --mode=nope; then
+            echo "незнакомый режим не отвергнут"
+            exit 1
+          fi
