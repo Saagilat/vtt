@@ -139,6 +139,7 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("POST /v1/campaigns/{id}/scenes:import", s.importScene)
 		mux.HandleFunc("GET /v1/campaigns/{id}/scenes", s.listScenes)
 		mux.HandleFunc("GET /v1/campaigns/{id}/scenes/{sid}", s.getScene)
+		mux.HandleFunc("PUT /v1/campaigns/{id}/scenes/{sid}/annotation", s.updateSceneAnnotation)
 		mux.HandleFunc("GET /v1/campaigns/{id}/table", s.table)
 	}
 	mux.HandleFunc("/", s.notFound)

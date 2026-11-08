@@ -108,6 +108,7 @@ type Content interface {
 	AcceptInvite(code, accountID string, now time.Time) (Campaign, error)
 	AddImage(campaignID string, data []byte, mime string, width, height int, sha string) (Image, error)
 	CreateScene(campaignID, imageID, name string, annotation []byte, active bool) (Scene, error)
+	UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte) (Scene, bool)
 	Scene(campaignID, sceneID string) (Scene, bool)
 	Scenes(campaignID string) []SceneSummary
 	ImageBytes(campaignID, imageID string) ([]byte, string, bool)
@@ -428,4 +429,61 @@ func (s *server) getScene(w http.ResponseWriter, r *http.Request) {
 		scene.Areas = json.RawMessage("[]")
 	}
 	writeJSON(w, http.StatusOK, scene)
+}
+
+// updateSceneAnnotation сохраняет разметку, нарисованную мастером в клиенте.
+// Проверка та же, что у импорта: клиент не получает доверенной ветки.
+func (s *server) updateSceneAnnotation(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	if !master(campaign.Role) {
+		writeError(w, http.StatusForbidden, "forbidden", "разметку правит мастер")
+		return
+	}
+	scene, ok := s.content.Scene(campaign.ID, r.PathValue("sid"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "сцены нет")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	data, err := io.ReadAll(r.Body)
+	if err != nil || len(data) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "пустая разметка")
+		return
+	}
+	document, err := annotation.Parse(data)
+	if err != nil {
+		var parse *annotation.ParseError
+		if errors.As(err, &parse) {
+			writeError(w, http.StatusUnprocessableEntity, "validation", parse.Reason)
+			return
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", "разметка не читается")
+		return
+	}
+	verdict := s.validator.Check(document, &annotation.ImageInfo{
+		Width: scene.Image.Width, Height: scene.Image.Height, Sha256: &scene.Image.SHA256})
+	if !verdict.Good() {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]string{
+				"code":          "validation",
+				"message":       verdict.Message,
+				"contract_code": verdict.Code,
+			},
+		})
+		return
+	}
+	updated, ok := s.content.UpdateSceneAnnotation(campaign.ID, scene.ID, data)
+	if !ok {
+		writeError(w, http.StatusConflict, "conflict", "разметка не сохранилась")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }

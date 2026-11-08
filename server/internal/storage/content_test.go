@@ -506,3 +506,36 @@ func TestExploredMaskStored(t *testing.T) {
 		t.Fatal("маска не заменилась")
 	}
 }
+
+func TestUpdateSceneAnnotation(t *testing.T) {
+	handler, db, _ := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Редактор"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene, err := db.CreateScene(campaign.ID, image.ID, "Правка", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := httptest.NewRequest("PUT",
+		"/v1/campaigns/"+campaign.ID+"/scenes/"+scene.ID+"/annotation",
+		bytes.NewReader(annotationFor(64, 64)))
+	update.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, update)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("правка разметки: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"w1"`) {
+		t.Fatalf("геометрия не вернулась: %s", rec.Body)
+	}
+}

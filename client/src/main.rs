@@ -173,6 +173,13 @@ enum PanelTab {
     Master,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum EditMode {
+    Off,
+    Wall,
+    Door,
+}
+
 struct App {
     base_url: String,
     login: String,
@@ -213,6 +220,8 @@ struct App {
     turn_token: Option<String>,
     round: u32,
     panel_tab: PanelTab,
+    edit_mode: EditMode,
+    edit_points: Vec<(f32, f32)>,
     show_settings: bool,
     hint_dismissed: bool,
     drag_token: Option<String>,
@@ -269,6 +278,8 @@ impl App {
             turn_token: None,
             round: 0,
             panel_tab: PanelTab::Chat,
+            edit_mode: EditMode::Off,
+            edit_points: Vec::new(),
             show_settings: false,
             hint_dismissed: false,
             drag_token: None,
@@ -362,6 +373,19 @@ impl App {
 
     fn post_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
         let request = ureq::post(&format!("{}{}", self.base_url, path));
+        let request = match &self.token {
+            Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+            None => request,
+        };
+        request
+            .send_json(body)
+            .map_err(format_error)?
+            .into_json::<T>()
+            .map_err(|error| error.to_string())
+    }
+
+    fn put_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
+        let request = ureq::put(&format!("{}{}", self.base_url, path));
         let request = match &self.token {
             Some(token) => request.set("Authorization", &format!("Bearer {token}")),
             None => request,
@@ -544,6 +568,8 @@ impl App {
     }
 
     fn open_scene(&mut self, summary: SceneSummary) {
+        self.edit_mode = EditMode::Off;
+        self.edit_points.clear();
         if !self.load_scene(&summary, None) {
             return;
         }
@@ -947,6 +973,51 @@ impl App {
                 "scene_id": scene_id,
             }));
         }
+        if self.is_master() {
+            ui.horizontal(|ui| {
+                if self.edit_mode == EditMode::Off {
+                    if accent_button(ui, "Редактор сцены", 190.0).clicked() {
+                        self.edit_mode = EditMode::Wall;
+                        self.edit_points.clear();
+                    }
+                } else {
+                    if ui
+                        .selectable_label(self.edit_mode == EditMode::Wall, "Стена")
+                        .clicked()
+                    {
+                        self.edit_mode = EditMode::Wall;
+                        self.edit_points.clear();
+                    }
+                    if ui
+                        .selectable_label(self.edit_mode == EditMode::Door, "Дверь")
+                        .clicked()
+                    {
+                        self.edit_mode = EditMode::Door;
+                        self.edit_points.clear();
+                    }
+                    if self.edit_mode == EditMode::Wall
+                        && accent_button(ui, "Завершить стену", 180.0).clicked()
+                    {
+                        self.finish_wall();
+                    }
+                    if accent_button(ui, "Сохранить", 130.0).clicked() {
+                        self.save_scene_annotation();
+                    }
+                    if ui.button("Отмена").clicked() {
+                        self.edit_mode = EditMode::Off;
+                        self.edit_points.clear();
+                    }
+                }
+            });
+            if self.edit_mode != EditMode::Off {
+                let hint = if self.edit_mode == EditMode::Wall {
+                    "клик по карте — точка стены; «Завершить стену» закрывает линию"
+                } else {
+                    "клик по стене — поставить на неё дверь"
+                };
+                ui.label(egui::RichText::new(hint).color(WARM_MUTED).size(15.0));
+            }
+        }
         if !self.hint_dismissed {
             let text = if self.is_master() {
                 "1. Вкладка «Мастер»: поставьте фишку и выберите владельца.  2. «Показать всем».  3. Вкладка «Бой»: начните бой."
@@ -982,7 +1053,8 @@ impl App {
                 return;
             }
         };
-        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::drag());
+        let (response, painter) =
+            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
         let image_w = scene.image.width as f32;
         let image_h = scene.image.height as f32;
@@ -998,7 +1070,20 @@ impl App {
         let origin = rect.center() - size / 2.0 + self.offset;
         let map_rect = egui::Rect::from_min_size(origin, size);
         let pointer = ui.input(|input| input.pointer.interact_pos());
-        if response.drag_started() {
+        if self.edit_mode != EditMode::Off && response.clicked() {
+            if let Some(position) = pointer {
+                if map_rect.contains(position) {
+                    let x = ((position.x - origin.x) / self.zoom).clamp(0.0, image_w);
+                    let y = ((position.y - origin.y) / self.zoom).clamp(0.0, image_h);
+                    match self.edit_mode {
+                        EditMode::Wall => self.edit_points.push((x, y)),
+                        EditMode::Door => self.add_door_at(x, y),
+                        EditMode::Off => {}
+                    }
+                }
+            }
+        }
+        if self.edit_mode == EditMode::Off && response.drag_started() {
             if let Some(position) = pointer {
                 self.drag_token = self
                     .tokens
@@ -1132,6 +1217,19 @@ impl App {
                 for pair in line.windows(2) {
                     painter.line_segment([pair[0], pair[1]], stroke_blue);
                 }
+            }
+        }
+        if self.edit_mode == EditMode::Wall && !self.edit_points.is_empty() {
+            let preview: Vec<egui::Pos2> = self
+                .edit_points
+                .iter()
+                .map(|(x, y)| to_screen(*x, *y))
+                .collect();
+            for pair in preview.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke_blue);
+            }
+            for point in preview {
+                painter.circle_filled(point, 5.0, WARM_ACCENT);
             }
         }
         for token in &self.tokens {
@@ -1527,6 +1625,158 @@ impl App {
             Err(error) => self.error = error,
         }
     }
+    fn finish_wall(&mut self) {
+        if self.edit_points.len() < 2 {
+            self.notice = "стена: нужно хотя бы две точки".to_string();
+            return;
+        }
+        let id = format!(
+            "w{}",
+            100000
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_millis() as u64 % 900000)
+                    .unwrap_or(0)
+        );
+        let points: Vec<Value> = self
+            .edit_points
+            .iter()
+            .map(|(x, y)| serde_json::json!([x.round() as i64, y.round() as i64]))
+            .collect();
+        if let Some(scene) = self.scene.as_mut() {
+            if let Some(walls) = scene.walls.as_array_mut() {
+                walls.push(serde_json::json!({"id": id, "points": points}));
+            }
+        }
+        self.edit_points.clear();
+        self.notice = "стена добавлена — не забудьте сохранить".to_string();
+    }
+
+    fn add_door_at(&mut self, x: f32, y: f32) {
+        let scene = match self.scene.as_mut() {
+            Some(scene) => scene,
+            None => return,
+        };
+        let walls = match scene.walls.as_array() {
+            Some(walls) => walls,
+            None => return,
+        };
+        let mut best: Option<(f32, String, f32, f32, f32, f32)> = None;
+        for wall in walls {
+            let id = match wall.get("id").and_then(Value::as_str) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let points: Vec<(f32, f32)> = wall
+                .get("points")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|point| {
+                            Some((
+                                point.get(0)?.as_f64()? as f32,
+                                point.get(1)?.as_f64()? as f32,
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for pair in points.windows(2) {
+                let (ax, ay) = pair[0];
+                let (bx, by) = pair[1];
+                let dx = bx - ax;
+                let dy = by - ay;
+                let length = (dx * dx + dy * dy).sqrt();
+                if length < 1.0 {
+                    continue;
+                }
+                let t = (((x - ax) * dx + (y - ay) * dy) / (length * length)).clamp(0.0, 1.0);
+                let px = ax + t * dx;
+                let py = ay + t * dy;
+                let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+                if best.as_ref().map(|item| distance < item.0).unwrap_or(true) {
+                    best = Some((distance, id.clone(), ax, ay, bx, by));
+                }
+            }
+        }
+        let Some((distance, wall_id, ax, ay, bx, by)) = best else {
+            self.notice = "рядом нет стены для двери".to_string();
+            return;
+        };
+        if distance > 30.0 {
+            self.notice = "дверь ставится на стену — кликните ближе".to_string();
+            return;
+        }
+        let length = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let ux = (bx - ax) / length;
+        let uy = (by - ay) / length;
+        let t = (((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / (length * length)).clamp(0.0, 1.0);
+        let px = ax + t * (bx - ax);
+        let py = ay + t * (by - ay);
+        let half = 22.0;
+        let from = [
+            (px - ux * half).round() as i64,
+            (py - uy * half).round() as i64,
+        ];
+        let to = [
+            (px + ux * half).round() as i64,
+            (py + uy * half).round() as i64,
+        ];
+        let id = format!(
+            "d{}",
+            100000
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_millis() as u64 % 900000)
+                    .unwrap_or(0)
+        );
+        if let Some(doors) = scene.doors.as_array_mut() {
+            doors.push(serde_json::json!({
+                "id": id,
+                "wall_id": wall_id,
+                "type": "normal",
+                "from": from,
+                "to": to
+            }));
+        }
+        self.notice = "дверь добавлена — не забудьте сохранить".to_string();
+    }
+
+    fn save_scene_annotation(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let scene = match &self.scene {
+            Some(scene) => scene.clone(),
+            None => return,
+        };
+        let annotation = serde_json::json!({
+            "format_version": 1,
+            "image": {"width": scene.image.width, "height": scene.image.height},
+            "grid": scene.grid,
+            "walls": scene.walls,
+            "doors": scene.doors,
+            "areas": scene.areas,
+        });
+        match self.put_json::<Scene>(
+            &format!(
+                "/v1/campaigns/{}/scenes/{}/annotation",
+                campaign.id, scene.id
+            ),
+            annotation,
+        ) {
+            Ok(updated) => {
+                self.scene = Some(updated);
+                self.edit_mode = EditMode::Off;
+                self.edit_points.clear();
+                self.notice = "разметка сцены сохранена".to_string();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
     fn ws_url(&self, campaign_id: &str, scene_id: &str) -> String {
         let base = if let Some(rest) = self.base_url.strip_prefix("https://") {
             format!("wss://{rest}")

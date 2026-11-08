@@ -463,6 +463,20 @@ func (d *DB) CreateScene(campaignID, imageID, name string, annotation []byte, ac
 	return scene, nil
 }
 
+// UpdateSceneAnnotation заменяет разметку сцены; проверку контракта делает API.
+func (d *DB) UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte) (api.Scene, bool) {
+	result, err := d.db.Exec(`UPDATE scenes SET annotation = ?
+		WHERE campaign_id = ? AND id = ?`, string(annotation), campaignID, sceneID)
+	if err != nil {
+		return api.Scene{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return api.Scene{}, false
+	}
+	return d.Scene(campaignID, sceneID)
+}
+
 func (d *DB) sceneRow(query string, args ...any) (api.Scene, bool) {
 	var (
 		scene      api.Scene
