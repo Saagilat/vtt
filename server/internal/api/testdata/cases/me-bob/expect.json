@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "body": {
+    "account": {
+      "id": "a2",
+      "login": "bob"
+    },
+    "campaigns": [
+      {
+        "id": "c1",
+        "name": "Тени над Валдхеймом",
+        "role": "player"
+      }
+    ]
+  }
+}

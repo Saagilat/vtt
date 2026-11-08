@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "body": {
+    "token": "token-1",
+    "expires_at": "2026-01-31T00:00:00Z",
+    "account": {
+      "id": "a1",
+      "login": "alice"
+    }
+  }
+}

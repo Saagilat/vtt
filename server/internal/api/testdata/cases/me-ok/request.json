@@ -1,0 +1,5 @@
+{
+  "method": "GET",
+  "path": "/v1/me",
+  "auth": "alice"
+}

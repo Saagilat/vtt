@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/v1/sessions",
+  "body": {
+    "login": "alice",
+    "password": "правильный пароль",
+    "extra": 1
+  }
+}

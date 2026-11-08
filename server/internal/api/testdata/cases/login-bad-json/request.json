@@ -1,0 +1,5 @@
+{
+  "method": "POST",
+  "path": "/v1/sessions",
+  "body_raw": "{"
+}
