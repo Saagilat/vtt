@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -369,7 +370,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			visibility = mask
 		}
 	}
-	actions := []string{"chat.say", "token.move", "token.update", "roll"}
+	actions := []string{"chat.say", "token.move", "token.update", "initiative.roll", "roll"}
 	if master(campaign.Role) {
 		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light")
 	}
@@ -544,6 +545,68 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			default:
 				room.broadcast(event)
 			}
+		case "initiative.roll":
+			current := room.currentScene()
+			token, ok := s.content.Token(campaign.ID, current, message.TokenID)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "фишки нет"},
+				})
+				continue
+			}
+			if !master(campaign.Role) && token.OwnerID != account.ID {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "чужая фишка"},
+				})
+				continue
+			}
+			bonus := 0
+			if token.CharacterID != "" {
+				if character, ok := s.content.Character(campaign.ID, token.CharacterID); ok {
+					bonus = (characterAbility(character, "dex") - 10) / 2
+				}
+			}
+			result, err := parseRoll(fmt.Sprintf("1d20%+d", bonus))
+			if err != nil {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": err.Error()},
+				})
+				continue
+			}
+			updated, ok := s.content.SetTokenStats(campaign.ID, current, token.ID,
+				token.HP, token.HPMax, result.Total)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "инициатива не сохранилась"},
+				})
+				continue
+			}
+			room.broadcast(map[string]any{
+				"type":       "roll",
+				"seq":        room.nextSeq(),
+				"time":       s.now().UTC().Format(time.RFC3339),
+				"formula":    result.Formula,
+				"values":     result.Values,
+				"modifier":   result.Modifier,
+				"total":      result.Total,
+				"visibility": "table",
+				"actor":      account,
+			})
+			room.broadcast(map[string]any{
+				"type":  "token.updated",
+				"seq":   room.nextSeq(),
+				"time":  s.now().UTC().Format(time.RFC3339),
+				"token": updated,
+				"actor": account,
+			})
 		case "visibility.peek":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{

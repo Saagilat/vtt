@@ -574,6 +574,21 @@ func characterStats(character Character) (int, int) {
 	return hp, hpMax
 }
 
+// characterAbility читает характеристику из данных листа; по умолчанию 10.
+func characterAbility(character Character, key string) int {
+	var sheet struct {
+		Abilities map[string]int `json:"abilities"`
+	}
+	if err := json.Unmarshal(character.Data, &sheet); err != nil {
+		return 10
+	}
+	score := sheet.Abilities[key]
+	if score < 1 || score > 30 {
+		return 10
+	}
+	return score
+}
+
 // characterData проверяет, что лист — JSON-объект, и подставляет {}.
 func characterData(raw json.RawMessage) ([]byte, bool) {
 	if len(raw) == 0 {

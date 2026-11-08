@@ -3031,6 +3031,13 @@ impl App {
         self.send_intent(payload);
     }
 
+    fn roll_initiative(&mut self, token_id: &str) {
+        self.send_intent(serde_json::json!({
+            "type": "initiative.roll",
+            "token_id": token_id,
+        }));
+    }
+
     fn link_token(&mut self, token_id: &str, character_id: &str) {
         self.send_intent(serde_json::json!({
             "type": "token.update",
@@ -3756,6 +3763,12 @@ impl App {
             let mut changed = None;
             for token in &ordered {
                 let editable = self.can_move_token(token);
+                let initiative_bonus = self
+                    .characters
+                    .iter()
+                    .find(|character| character.id == token.character_id)
+                    .map(|character| (sheet_ability(&character.data, "dex") - 10) / 2)
+                    .unwrap_or(0);
                 let current = self.turn_token.as_deref() == Some(token.id.as_str());
                 let mine = self
                     .account
@@ -3806,6 +3819,18 @@ impl App {
                             .add(egui::DragValue::new(&mut darkvision).range(0..=300))
                             .changed();
                     });
+                    let initiative_label = if token.character_id.is_empty() {
+                        "инициатива d20".to_string()
+                    } else {
+                        format!("инициатива d20 {initiative_bonus:+}")
+                    };
+                    if ui
+                        .small_button(initiative_label)
+                        .on_hover_text("бросить и записать инициативу")
+                        .clicked()
+                    {
+                        self.roll_initiative(&token.id);
+                    }
                     if touched {
                         changed = Some((token.id.clone(), hp, hp_max, initiative, darkvision));
                     }

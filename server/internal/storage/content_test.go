@@ -373,7 +373,7 @@ func TestTableChat(t *testing.T) {
 	}
 
 	character, ok := db.CreateCharacter(campaign.ID, "", "Мира",
-		[]byte(`{"class":"воин","level":2,"hp":9,"max_hp":14}`))
+		[]byte(`{"class":"воин","level":2,"hp":9,"max_hp":14,"abilities":{"dex":16}}`))
 	if !ok {
 		t.Fatal("лист для фишки не создался")
 	}
@@ -415,6 +415,25 @@ func TestTableChat(t *testing.T) {
 	var sheet map[string]any
 	if err := json.Unmarshal(character.Data, &sheet); err != nil || sheet["hp"] != float64(4) {
 		t.Fatalf("HP листа после фишки: %s", character.Data)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "initiative.roll", "token_id": linkedID, "intent_id": "i2d",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("initiative roll: %v", err)
+	}
+	if reply["type"] != "roll" || reply["formula"] != "1d20+3" {
+		t.Fatalf("бросок инициативы: %+v", reply)
+	}
+	total, _ := reply["total"].(float64)
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("инициатива фишки: %v", err)
+	}
+	tokenUpdated, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.updated" || !ok || tokenUpdated["initiative"] != total {
+		t.Fatalf("инициатива не записалась: %+v", reply)
 	}
 
 	if err := conn.WriteJSON(map[string]any{
