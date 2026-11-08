@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use eframe::egui;
+use image::ImageEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -155,6 +156,13 @@ enum Screen {
     Scene,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PanelTab {
+    Chat,
+    Combat,
+    Master,
+}
+
 struct App {
     base_url: String,
     login: String,
@@ -189,6 +197,9 @@ struct App {
     roll_formula: String,
     turn_token: Option<String>,
     round: u32,
+    panel_tab: PanelTab,
+    show_settings: bool,
+    hint_dismissed: bool,
     drag_token: Option<String>,
     doors: HashMap<String, bool>,
     #[allow(dead_code)]
@@ -236,6 +247,9 @@ impl App {
             roll_formula: "1d20".to_string(),
             turn_token: None,
             round: 0,
+            panel_tab: PanelTab::Chat,
+            show_settings: false,
+            hint_dismissed: false,
             drag_token: None,
             doors: HashMap::new(),
             install_dir,
@@ -374,6 +388,8 @@ impl App {
         self.pending_image = None;
         self.invite_code.clear();
         self.token_owner.clear();
+        self.panel_tab = PanelTab::Chat;
+        self.hint_dismissed = false;
         match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
             Ok(detail) => self.campaign_detail = Some(detail),
             Err(error) => self.error = error,
@@ -413,6 +429,54 @@ impl App {
                 self.open_campaign(campaign);
             }
             Err(error) => self.error = error,
+        }
+    }
+
+    fn create_demo(&mut self) {
+        if let Some(existing) = self
+            .campaigns
+            .iter()
+            .find(|campaign| campaign.name == "Демо: таверна")
+            .cloned()
+        {
+            self.open_campaign(existing);
+            self.open_first_scene();
+            self.notice = "демо-кампания уже есть — открываю стол".to_string();
+            return;
+        }
+        let campaign = match self.post_json::<Campaign>(
+            "/v1/campaigns",
+            serde_json::json!({"name": "Демо: таверна"}),
+        ) {
+            Ok(campaign) => campaign,
+            Err(error) => {
+                self.error = error;
+                return;
+            }
+        };
+        let (image, annotation) = demo_scene();
+        let (body, content_type) = multipart_body(&image, &annotation, "Таверна");
+        match self.post_multipart(
+            &format!("/v1/campaigns/{}/scenes:import", campaign.id),
+            body,
+            content_type,
+        ) {
+            Ok(_) => {
+                if let Err(error) = self.load_campaigns() {
+                    self.error = error;
+                    return;
+                }
+                self.open_campaign(campaign);
+                self.open_first_scene();
+                self.notice = "демо-стол готов: сцена «Таверна»".to_string();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn open_first_scene(&mut self) {
+        if let Some(scene) = self.scenes.first().cloned() {
+            self.open_scene(scene);
         }
     }
 
@@ -606,6 +670,9 @@ impl App {
             if ui.button("Создать").clicked() {
                 self.create_campaign();
             }
+            if ui.button("Демо-стол").clicked() {
+                self.create_demo();
+            }
         });
         ui.separator();
         ui.heading("Войти по коду");
@@ -707,6 +774,25 @@ impl App {
                 "scene_id": scene_id,
             }));
         }
+        if !self.hint_dismissed {
+            let text = if self.is_master() {
+                "1. Вкладка «Мастер»: поставьте фишку и выберите владельца.  2. «Показать всем».  3. Вкладка «Бой»: начните бой."
+            } else {
+                "Перетащите свою фишку, бросьте кубы во вкладке «Чат» и дождитесь своего хода во вкладке «Бой»."
+            };
+            let mut dismiss = false;
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(text);
+                    if ui.small_button("Понятно").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+            if dismiss {
+                self.hint_dismissed = true;
+            }
+        }
         ui.separator();
         self.show_map(ui);
     }
@@ -791,8 +877,10 @@ impl App {
         let stroke_yellow = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 205, 60));
         let stroke_green = egui::Stroke::new(3.0, egui::Color32::from_rgb(70, 210, 110));
         let stroke_blue = egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255));
-        let stroke_grid =
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 90, 90, 140));
+        let stroke_grid = egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(220, 220, 255, 45),
+        );
 
         if scene.grid.get("mode").and_then(Value::as_str) == Some("square") {
             if let (Some(origin), Some(side)) = (
@@ -900,6 +988,125 @@ impl App {
             );
         }
     }
+}
+
+fn fill_rect(
+    canvas: &mut image::RgbaImage,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    color: image::Rgba<u8>,
+) {
+    for y in y0..y1.min(canvas.height()) {
+        for x in x0..x1.min(canvas.width()) {
+            canvas.put_pixel(x, y, color);
+        }
+    }
+}
+
+fn hline(
+    canvas: &mut image::RgbaImage,
+    x0: u32,
+    x1: u32,
+    y: u32,
+    thickness: u32,
+    color: image::Rgba<u8>,
+) {
+    fill_rect(
+        canvas,
+        x0,
+        y.saturating_sub(thickness / 2),
+        x1,
+        y + thickness / 2 + 1,
+        color,
+    );
+}
+
+fn vline(
+    canvas: &mut image::RgbaImage,
+    x: u32,
+    y0: u32,
+    y1: u32,
+    thickness: u32,
+    color: image::Rgba<u8>,
+) {
+    fill_rect(
+        canvas,
+        x.saturating_sub(thickness / 2),
+        y0,
+        x + thickness / 2 + 1,
+        y1,
+        color,
+    );
+}
+
+// demo_scene рисует маленькую таверну и отдаёт пару «картинка + annotation.json»,
+// чтобы демо-стол не требовал файлов на диске.
+fn demo_scene() -> (Vec<u8>, Vec<u8>) {
+    const W: u32 = 800;
+    const H: u32 = 600;
+    let mut canvas = image::RgbaImage::from_pixel(W, H, image::Rgba([22, 22, 28, 255]));
+    let floor = image::Rgba([64, 57, 51, 255]);
+    let room = image::Rgba([78, 68, 60, 255]);
+    let grid = image::Rgba([92, 86, 100, 255]);
+    let wall = image::Rgba([220, 190, 90, 255]);
+    let door = image::Rgba([170, 105, 55, 255]);
+
+    fill_rect(&mut canvas, 50, 50, 750, 550, floor);
+    fill_rect(&mut canvas, 60, 60, 390, 290, room);
+    fill_rect(&mut canvas, 410, 60, 740, 290, room);
+    fill_rect(&mut canvas, 60, 310, 740, 540, room);
+
+    let mut x = 50;
+    while x <= 750 {
+        vline(&mut canvas, x, 50, 550, 1, grid);
+        x += 50;
+    }
+    let mut y = 50;
+    while y <= 550 {
+        hline(&mut canvas, 50, 750, y, 1, grid);
+        y += 50;
+    }
+
+    for (x0, y0, x1, y1) in [
+        (50, 50, 750, 50),
+        (750, 50, 750, 550),
+        (750, 550, 50, 550),
+        (50, 550, 50, 50),
+        (400, 50, 400, 550),
+    ] {
+        if x0 == x1 {
+            vline(&mut canvas, x0, y0.min(y1), y0.max(y1), 7, wall);
+        } else {
+            hline(&mut canvas, x0.min(x1), x0.max(x1), y0, 7, wall);
+        }
+    }
+    vline(&mut canvas, 400, 250, 330, 12, door);
+    hline(&mut canvas, 50, 70, 50, 7, door);
+
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(canvas.as_raw(), W, H, image::ExtendedColorType::Rgba8)
+        .expect("демо-карта кодируется в PNG");
+
+    let annotation = serde_json::json!({
+        "format_version": 1,
+        "image": {"width": W, "height": H},
+        "grid": {"mode": "square", "origin": [0, 0], "square": {"side_px": 50}},
+        "walls": [
+            {"id": "w1", "points": [[50, 50], [750, 50]]},
+            {"id": "w2", "points": [[750, 50], [750, 550]]},
+            {"id": "w3", "points": [[750, 550], [50, 550]]},
+            {"id": "w4", "points": [[50, 550], [50, 50]]},
+            {"id": "w5", "points": [[400, 50], [400, 550]]}
+        ],
+        "doors": [
+            {"id": "d1", "wall_id": "w5", "type": "normal", "from": [400, 250], "to": [400, 330]}
+        ],
+        "areas": []
+    });
+    (png, serde_json::to_vec(&annotation).expect("демо-разметка"))
 }
 
 fn file_name(path: &str) -> String {
@@ -1423,186 +1630,216 @@ impl App {
     fn show_chat(&mut self, ui: &mut egui::Ui) {
         ui.heading("Стол");
         ui.label(&self.chat_status);
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .auto_shrink([false, false])
-            .max_height(180.0)
-            .show(ui, |ui| {
-                for line in &self.chat_lines {
-                    ui.label(line);
-                }
-            });
-        ui.separator();
+        if !self.is_master() && self.panel_tab == PanelTab::Master {
+            self.panel_tab = PanelTab::Chat;
+        }
         ui.horizontal(|ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.chat_input)
-                    .hint_text("сообщение столу")
-                    .desired_width(220.0),
-            );
-            let entered =
-                response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
-            if ui.button("Сказать").clicked() || entered {
-                self.chat_send();
+            if ui
+                .selectable_label(self.panel_tab == PanelTab::Chat, "Чат")
+                .clicked()
+            {
+                self.panel_tab = PanelTab::Chat;
+            }
+            if ui
+                .selectable_label(self.panel_tab == PanelTab::Combat, "Бой")
+                .clicked()
+            {
+                self.panel_tab = PanelTab::Combat;
+            }
+            if self.is_master()
+                && ui
+                    .selectable_label(self.panel_tab == PanelTab::Master, "Мастер")
+                    .clicked()
+            {
+                self.panel_tab = PanelTab::Master;
             }
         });
         ui.separator();
-        ui.heading("Кубы");
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.roll_formula).desired_width(90.0));
-            if ui.button("Бросить").clicked() {
-                self.roll_dice();
-            }
-            if ui.button("d20").clicked() {
-                self.roll_formula = "1d20".to_string();
-                self.roll_dice();
-            }
-        });
-        if let Some(campaign) = &self.campaign {
-            if campaign.role == "owner" || campaign.role == "master" {
-                ui.separator();
-                ui.heading("Фишки");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.token_name)
-                        .hint_text("имя фишки")
-                        .desired_width(200.0),
-                );
-                let members = self
-                    .campaign_detail
-                    .as_ref()
-                    .map(|detail| detail.members.clone())
-                    .unwrap_or_default();
-                let selected = members
-                    .iter()
-                    .find(|member| member.id == self.token_owner)
-                    .map(|member| member.login.clone())
-                    .unwrap_or_else(|| "я (мастер)".to_string());
-                egui::ComboBox::from_label("владелец")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.token_owner, String::new(), "я (мастер)");
-                        for member in &members {
-                            ui.selectable_value(
-                                &mut self.token_owner,
-                                member.id.clone(),
-                                format!("{} ({})", member.login, member.role),
-                            );
-                        }
-                    });
-                if ui.button("+ в центр сцены").clicked() {
-                    self.place_token();
-                }
-                ui.label("перетащите фишку по карте");
-
-                let door_ids: Vec<String> = self
-                    .scene
-                    .as_ref()
-                    .and_then(|scene| scene.doors.as_array())
-                    .map(|doors| {
-                        doors
-                            .iter()
-                            .filter_map(|door| door.get("id")?.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if !door_ids.is_empty() {
-                    ui.separator();
-                    ui.heading("Двери");
-                    let mut toggle = None;
-                    for id in door_ids {
-                        let mut open = self.doors.get(&id).copied().unwrap_or(false);
-                        if ui.checkbox(&mut open, &id).changed() {
-                            toggle = Some((id, open));
-                        }
+        if self.panel_tab == PanelTab::Chat {
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for line in &self.chat_lines {
+                        ui.label(line);
                     }
-                    if let Some((id, open)) = toggle {
-                        self.doors.insert(id.clone(), open);
-                        self.send_intent(serde_json::json!({
-                            "type": "door.set",
-                            "door_id": id,
-                            "open": open,
-                        }));
-                    }
-                }
-            }
-        }
-        ui.separator();
-        if self.round > 0 {
-            ui.heading(format!("Бой · круг {}", self.round));
-        } else {
-            ui.heading("Бой");
-        }
-        if !self.is_master() {
-            ui.label("перетащите свою фишку по карте");
-        }
-        let mut ordered = self.tokens.clone();
-        ordered.sort_by(|a, b| {
-            b.initiative
-                .cmp(&a.initiative)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        if ordered.is_empty() {
-            ui.label("на сцене нет фишек");
-        }
-        let mut changed = None;
-        for token in &ordered {
-            let editable = self.can_move_token(token);
-            let current = self.turn_token.as_deref() == Some(token.id.as_str());
-            let mine = self
-                .account
-                .as_ref()
-                .map(|account| account.id == token.owner_id)
-                .unwrap_or(false);
-            ui.horizontal(|ui| {
-                if current {
-                    ui.strong("▶");
-                }
-                if current && mine {
-                    ui.strong("ваш ход");
-                }
-                ui.label(format!(
-                    "{}  иниц. {}  HP {}/{}",
-                    token.name, token.initiative, token.hp, token.hp_max
-                ));
-                if !token.owner_login.is_empty() {
-                    ui.weak(&token.owner_login);
-                }
-            });
-            if editable {
-                let mut hp = token.hp;
-                let mut hp_max = token.hp_max.max(1);
-                let mut initiative = token.initiative;
-                let mut touched = false;
-                ui.horizontal(|ui| {
-                    ui.label("HP");
-                    touched |= ui
-                        .add(egui::DragValue::new(&mut hp).range(0..=hp_max))
-                        .changed();
-                    ui.label("/");
-                    touched |= ui
-                        .add(egui::DragValue::new(&mut hp_max).range(1..=9999))
-                        .changed();
-                    ui.label("иниц.");
-                    touched |= ui
-                        .add(egui::DragValue::new(&mut initiative).range(-100..=1000))
-                        .changed();
                 });
-                if touched {
-                    changed = Some((token.id.clone(), hp, hp_max, initiative));
+            ui.separator();
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.chat_input)
+                        .hint_text("сообщение столу")
+                        .desired_width(220.0),
+                );
+                let entered =
+                    response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
+                if ui.button("Сказать").clicked() || entered {
+                    self.chat_send();
+                }
+            });
+            ui.separator();
+            ui.heading("Кубы");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.roll_formula).desired_width(90.0));
+                if ui.button("Бросить").clicked() {
+                    self.roll_dice();
+                }
+                if ui.button("d20").clicked() {
+                    self.roll_formula = "1d20".to_string();
+                    self.roll_dice();
+                }
+            });
+        }
+        if self.panel_tab == PanelTab::Master {
+            if let Some(campaign) = &self.campaign {
+                if campaign.role == "owner" || campaign.role == "master" {
+                    ui.separator();
+                    ui.heading("Фишки");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.token_name)
+                            .hint_text("имя фишки")
+                            .desired_width(200.0),
+                    );
+                    let members = self
+                        .campaign_detail
+                        .as_ref()
+                        .map(|detail| detail.members.clone())
+                        .unwrap_or_default();
+                    let selected = members
+                        .iter()
+                        .find(|member| member.id == self.token_owner)
+                        .map(|member| member.login.clone())
+                        .unwrap_or_else(|| "я (мастер)".to_string());
+                    egui::ComboBox::from_label("владелец")
+                        .selected_text(selected)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.token_owner, String::new(), "я (мастер)");
+                            for member in &members {
+                                ui.selectable_value(
+                                    &mut self.token_owner,
+                                    member.id.clone(),
+                                    format!("{} ({})", member.login, member.role),
+                                );
+                            }
+                        });
+                    if ui.button("+ в центр сцены").clicked() {
+                        self.place_token();
+                    }
+                    ui.label("перетащите фишку по карте");
+
+                    let door_ids: Vec<String> = self
+                        .scene
+                        .as_ref()
+                        .and_then(|scene| scene.doors.as_array())
+                        .map(|doors| {
+                            doors
+                                .iter()
+                                .filter_map(|door| door.get("id")?.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !door_ids.is_empty() {
+                        ui.separator();
+                        ui.heading("Двери");
+                        let mut toggle = None;
+                        for id in door_ids {
+                            let mut open = self.doors.get(&id).copied().unwrap_or(false);
+                            if ui.checkbox(&mut open, &id).changed() {
+                                toggle = Some((id, open));
+                            }
+                        }
+                        if let Some((id, open)) = toggle {
+                            self.doors.insert(id.clone(), open);
+                            self.send_intent(serde_json::json!({
+                                "type": "door.set",
+                                "door_id": id,
+                                "open": open,
+                            }));
+                        }
+                    }
                 }
             }
         }
-        if let Some((id, hp, hp_max, initiative)) = changed {
-            self.update_token(&id, hp, hp_max, initiative);
-        }
-        if self.is_master() {
-            let label = if self.round == 0 {
-                "Начать бой"
+        if self.panel_tab == PanelTab::Combat {
+            ui.separator();
+            if self.round > 0 {
+                ui.heading(format!("Бой · круг {}", self.round));
             } else {
-                "Следующий ход"
-            };
-            if ui.button(label).clicked() {
-                self.next_turn();
+                ui.heading("Бой");
+            }
+            if !self.is_master() {
+                ui.label("перетащите свою фишку по карте");
+            }
+            let mut ordered = self.tokens.clone();
+            ordered.sort_by(|a, b| {
+                b.initiative
+                    .cmp(&a.initiative)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            if ordered.is_empty() {
+                ui.label("на сцене нет фишек");
+            }
+            let mut changed = None;
+            for token in &ordered {
+                let editable = self.can_move_token(token);
+                let current = self.turn_token.as_deref() == Some(token.id.as_str());
+                let mine = self
+                    .account
+                    .as_ref()
+                    .map(|account| account.id == token.owner_id)
+                    .unwrap_or(false);
+                ui.horizontal(|ui| {
+                    if current {
+                        ui.strong("▶");
+                    }
+                    if current && mine {
+                        ui.strong("ваш ход");
+                    }
+                    ui.label(format!(
+                        "{}  иниц. {}  HP {}/{}",
+                        token.name, token.initiative, token.hp, token.hp_max
+                    ));
+                    if !token.owner_login.is_empty() {
+                        ui.weak(&token.owner_login);
+                    }
+                });
+                if editable {
+                    let mut hp = token.hp;
+                    let mut hp_max = token.hp_max.max(1);
+                    let mut initiative = token.initiative;
+                    let mut touched = false;
+                    ui.horizontal(|ui| {
+                        ui.label("HP");
+                        touched |= ui
+                            .add(egui::DragValue::new(&mut hp).range(0..=hp_max))
+                            .changed();
+                        ui.label("/");
+                        touched |= ui
+                            .add(egui::DragValue::new(&mut hp_max).range(1..=9999))
+                            .changed();
+                        ui.label("иниц.");
+                        touched |= ui
+                            .add(egui::DragValue::new(&mut initiative).range(-100..=1000))
+                            .changed();
+                    });
+                    if touched {
+                        changed = Some((token.id.clone(), hp, hp_max, initiative));
+                    }
+                }
+            }
+            if let Some((id, hp, hp_max, initiative)) = changed {
+                self.update_token(&id, hp, hp_max, initiative);
+            }
+            if self.is_master() {
+                let label = if self.round == 0 {
+                    "Начать бой"
+                } else {
+                    "Следующий ход"
+                };
+                if ui.button(label).clicked() {
+                    self.next_turn();
+                }
             }
         }
     }
@@ -1620,9 +1857,10 @@ impl eframe::App for App {
             .campaign
             .as_ref()
             .map(|campaign| role_name(&campaign.role));
-        let base_url = self.base_url.clone();
+        let connection = self.chat_status.clone();
         let logged = self.token.is_some();
         let mut logout = false;
+        let mut open_settings = false;
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("VTT");
@@ -1633,15 +1871,50 @@ impl eframe::App for App {
                         None => ui.label(login),
                     };
                 }
-                if !base_url.is_empty() {
+                if self.screen == Screen::Scene {
                     ui.separator();
-                    ui.label(&base_url);
+                    ui.weak(&connection);
                 }
-                if logged && ui.button("Выйти").clicked() {
-                    logout = true;
+                if logged {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Настройки").clicked() {
+                            open_settings = true;
+                        }
+                    });
                 }
             });
         });
+        if open_settings {
+            self.show_settings = true;
+        }
+        if self.show_settings {
+            let mut open = true;
+            let mut do_logout = false;
+            egui::Window::new("Настройки")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    if let Some(login) = &account_login {
+                        ui.label(format!("аккаунт: {login}"));
+                    }
+                    if let Some(role) = role_label {
+                        ui.label(format!("роль: {role}"));
+                    }
+                    ui.separator();
+                    ui.label("сервер");
+                    ui.monospace(&self.base_url);
+                    ui.separator();
+                    if ui.button("Выйти из аккаунта").clicked() {
+                        do_logout = true;
+                    }
+                });
+            self.show_settings = open;
+            if do_logout {
+                self.show_settings = false;
+                logout = true;
+            }
+        }
         if logout {
             self.logout();
         }
@@ -1748,5 +2021,17 @@ mod tests {
         assert_eq!(token.hp_max, 10);
         assert_eq!(token.initiative, 0);
         assert!(token.owner_login.is_empty());
+    }
+
+    #[test]
+    fn demo_scene_has_png_and_annotation() {
+        let (png, annotation) = demo_scene();
+        let decoded = image::load_from_memory(&png).expect("демо-карта");
+        assert_eq!(decoded.width(), 800);
+        assert_eq!(decoded.height(), 600);
+        let value: Value = serde_json::from_slice(&annotation).expect("демо-разметка");
+        assert_eq!(value["format_version"], 1);
+        assert_eq!(value["walls"].as_array().map(Vec::len), Some(5));
+        assert_eq!(value["doors"].as_array().map(Vec::len), Some(1));
     }
 }
