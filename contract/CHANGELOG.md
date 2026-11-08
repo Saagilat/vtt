@@ -30,6 +30,13 @@
 ([FORMAT.md](FORMAT.md), §2). Порядок обхода полигона и самопересечения не проверяются —
 это записано там же, в §8.
 
+Предварительный файл `annotation.preview.json` в контракт не входит: он нужен разметчику и клиенту,
+и у него свой инвариант — [../annotator/PREVIEW.md](../annotator/PREVIEW.md).
+
+Набор `cases/` пополняется без новой версии: случай `two-violations` — файл с двумя нарушениями
+сразу — держит договор о том, что оба валидатора называют одну и ту же ошибку, а не первую
+попавшуюся.
+
 Файлы: [annotation.v1.schema.json](annotation.v1.schema.json),
 [annotation.v1.example.json](annotation.v1.example.json), случаи — `cases/`, проверка —
 [../scripts/validate_annotation.py](../scripts/validate_annotation.py).
