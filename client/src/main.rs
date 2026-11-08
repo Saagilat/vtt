@@ -129,6 +129,7 @@ enum ChatEvent {
     TokenPlaced(Token),
     TokenMoved(Token),
     TokenUpdated(Token),
+    CharacterChanged(Character),
     SceneShown(
         SceneSummary,
         Vec<Token>,
@@ -149,6 +150,21 @@ fn default_hp() -> i32 {
     10
 }
 
+fn character_hp(character: &Character) -> (i32, i32) {
+    let hp = character
+        .data
+        .get("hp")
+        .and_then(Value::as_i64)
+        .unwrap_or(10) as i32;
+    let hp_max = character
+        .data
+        .get("max_hp")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or(10) as i32;
+    (hp.clamp(0, hp_max), hp_max)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct Token {
     id: String,
@@ -162,6 +178,10 @@ struct Token {
     owner_id: String,
     #[serde(default)]
     owner_login: String,
+    #[serde(default)]
+    character_id: String,
+    #[serde(default)]
+    character_name: String,
     #[serde(default = "default_hp")]
     hp: i32,
     #[serde(default = "default_hp")]
@@ -255,6 +275,7 @@ struct App {
     tokens: Vec<Token>,
     token_name: String,
     token_owner: String,
+    token_character: String,
     token_darkvision: i32,
     roll_formula: String,
     preview_account: String,
@@ -317,6 +338,7 @@ impl App {
             tokens: Vec::new(),
             token_name: "Фишка".to_string(),
             token_owner: String::new(),
+            token_character: String::new(),
             token_darkvision: 0,
             roll_formula: "1d20".to_string(),
             preview_account: String::new(),
@@ -2183,6 +2205,13 @@ impl App {
                                     let _ = sender.send(ChatEvent::TokenUpdated(token));
                                 }
                             }
+                            Some("character.changed") => {
+                                if let Ok(character) =
+                                    serde_json::from_value::<Character>(value["character"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::CharacterChanged(character));
+                                }
+                            }
                             Some("roll") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
                                 let formula = value["formula"].as_str().unwrap_or("?");
@@ -2281,6 +2310,29 @@ impl App {
                 ChatEvent::TokenUpdated(token) => {
                     if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
                         *item = token;
+                    }
+                }
+                ChatEvent::CharacterChanged(character) => {
+                    let (hp, hp_max) = character_hp(&character);
+                    if let Some(item) = self
+                        .characters
+                        .iter_mut()
+                        .find(|item| item.id == character.id)
+                    {
+                        *item = character.clone();
+                    } else {
+                        self.characters.push(character.clone());
+                    }
+                    for token in &mut self.tokens {
+                        if token.character_id == character.id {
+                            token.hp = hp;
+                            token.hp_max = hp_max;
+                            token.character_name = character.name.clone();
+                        }
+                    }
+                    if self.selected_character.as_deref() == Some(character.id.as_str()) {
+                        self.sheet_hp = hp;
+                        self.sheet_hp_max = hp_max;
                     }
                 }
                 ChatEvent::Roll(line) => self.chat_lines.push(line),
@@ -2422,7 +2474,18 @@ impl App {
         if !self.token_owner.is_empty() {
             payload["owner_id"] = Value::String(self.token_owner.clone());
         }
+        if !self.token_character.is_empty() {
+            payload["character_id"] = Value::String(self.token_character.clone());
+        }
         self.send_intent(payload);
+    }
+
+    fn link_token(&mut self, token_id: &str, character_id: &str) {
+        self.send_intent(serde_json::json!({
+            "type": "token.update",
+            "token_id": token_id,
+            "character_id": character_id,
+        }));
     }
 
     fn update_token(
@@ -2704,6 +2767,40 @@ impl App {
                                 );
                             }
                         });
+                    let characters = self.characters.clone();
+                    let character_label = characters
+                        .iter()
+                        .find(|character| character.id == self.token_character)
+                        .map(|character| character.name.clone())
+                        .unwrap_or_else(|| "без листа".to_string());
+                    let before_character = self.token_character.clone();
+                    egui::ComboBox::from_label("лист")
+                        .selected_text(character_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.token_character,
+                                String::new(),
+                                "без листа",
+                            );
+                            for character in &characters {
+                                ui.selectable_value(
+                                    &mut self.token_character,
+                                    character.id.clone(),
+                                    format!("{} ({})", character.name, character.owner_login),
+                                );
+                            }
+                        });
+                    if before_character != self.token_character {
+                        if let Some(character) = characters
+                            .iter()
+                            .find(|character| character.id == self.token_character)
+                        {
+                            self.token_name = character.name.clone();
+                            if !character.owner_id.is_empty() {
+                                self.token_owner = character.owner_id.clone();
+                            }
+                        }
+                    }
                     ui.horizontal(|ui| {
                         ui.label("тёмное зрение, фт");
                         ui.add(egui::DragValue::new(&mut self.token_darkvision).range(0..=300));
@@ -2877,6 +2974,9 @@ impl App {
                     if !token.owner_login.is_empty() {
                         ui.weak(&token.owner_login);
                     }
+                    if !token.character_name.is_empty() {
+                        ui.weak(format!("лист: {}", token.character_name));
+                    }
                 });
                 if editable {
                     let mut hp = token.hp;
@@ -2906,6 +3006,32 @@ impl App {
                     });
                     if touched {
                         changed = Some((token.id.clone(), hp, hp_max, initiative, darkvision));
+                    }
+                }
+                if self.is_master() {
+                    let characters = self.characters.clone();
+                    let label = characters
+                        .iter()
+                        .find(|character| character.id == token.character_id)
+                        .map(|character| character.name.clone())
+                        .unwrap_or_else(|| "без листа".to_string());
+                    let mut choice = token.character_id.clone();
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(format!("token-character-{}", token.id))
+                            .selected_text(label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut choice, String::new(), "без листа");
+                                for character in &characters {
+                                    ui.selectable_value(
+                                        &mut choice,
+                                        character.id.clone(),
+                                        character.name.clone(),
+                                    );
+                                }
+                            });
+                    });
+                    if choice != token.character_id {
+                        self.link_token(&token.id, &choice);
                     }
                 }
             }

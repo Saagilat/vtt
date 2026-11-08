@@ -102,18 +102,20 @@ type TokenPatch struct {
 
 // Token — фишка на сцене. Координаты — в пикселях картинки.
 type Token struct {
-	ID         string  `json:"id"`
-	SceneID    string  `json:"scene_id"`
-	Name       string  `json:"name"`
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	Color      string  `json:"color"`
-	OwnerID    string  `json:"owner_id,omitempty"`
-	OwnerLogin string  `json:"owner_login,omitempty"`
-	HP         int     `json:"hp"`
-	HPMax      int     `json:"hp_max"`
-	Initiative int     `json:"initiative"`
-	Darkvision int     `json:"darkvision_ft"`
+	ID            string  `json:"id"`
+	SceneID       string  `json:"scene_id"`
+	Name          string  `json:"name"`
+	X             float64 `json:"x"`
+	Y             float64 `json:"y"`
+	Color         string  `json:"color"`
+	OwnerID       string  `json:"owner_id,omitempty"`
+	OwnerLogin    string  `json:"owner_login,omitempty"`
+	CharacterID   string  `json:"character_id,omitempty"`
+	CharacterName string  `json:"character_name,omitempty"`
+	HP            int     `json:"hp"`
+	HPMax         int     `json:"hp_max"`
+	Initiative    int     `json:"initiative"`
+	Darkvision    int     `json:"darkvision_ft"`
 }
 
 // ErrInviteNotFound — кода нет.
@@ -142,6 +144,9 @@ type Content interface {
 	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
 	SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (Token, bool)
 	SetTokenDarkvision(campaignID, sceneID, tokenID string, darkvision int) (Token, bool)
+	SetTokenCharacter(campaignID, sceneID, tokenID, characterID string) (Token, bool)
+	SetCharacterHP(campaignID, characterID string, hp, hpMax int) (Character, bool)
+	SetCharacterTokensHP(campaignID, characterID string, hp, hpMax int) bool
 	Doors(campaignID, sceneID string) map[string]bool
 	SetDoor(campaignID, sceneID, doorID string, open bool) bool
 	ExploredMask(campaignID, sceneID, accountID string) []byte
@@ -528,6 +533,28 @@ func (s *server) updateSceneAnnotation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// characterStats читает HP из данных листа; по умолчанию 10/10.
+func characterStats(character Character) (int, int) {
+	hp, hpMax := 10, 10
+	var sheet struct {
+		HP    *int `json:"hp"`
+		HPMax *int `json:"max_hp"`
+	}
+	if err := json.Unmarshal(character.Data, &sheet); err != nil {
+		return hp, hpMax
+	}
+	if sheet.HP != nil && *sheet.HP >= 0 {
+		hp = *sheet.HP
+	}
+	if sheet.HPMax != nil && *sheet.HPMax > 0 {
+		hpMax = *sheet.HPMax
+	}
+	if hp > hpMax {
+		hp = hpMax
+	}
+	return hp, hpMax
+}
+
 // characterData проверяет, что лист — JSON-объект, и подставляет {}.
 func characterData(raw json.RawMessage) ([]byte, bool) {
 	if len(raw) == 0 {
@@ -662,5 +689,8 @@ func (s *server) updateCharacter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "лист не сохранился")
 		return
 	}
+	hp, hpMax := characterStats(updated)
+	s.content.SetCharacterTokensHP(campaign.ID, updated.ID, hp, hpMax)
+	s.broadcastCharacterChanged(campaign.ID, updated, account)
 	writeJSON(w, http.StatusOK, updated)
 }

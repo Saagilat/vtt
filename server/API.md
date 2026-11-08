@@ -116,6 +116,10 @@ DELETE /v1/sessions/current → 204, тела нет
 любого участника. `PATCH` заменяет `data` целиком, а не отдельные поля. Игрок правит только
 свой лист, мастер — любой; чужой лист игроку доступен только на чтение.
 
+Если лист связан с фишками, сохранение `hp`/`max_hp` переносит их на все фишки этого
+персонажа в кампании и рассылает событие `character.changed`. Обратно, смена HP связанной
+фишки обновляет лист.
+
 ## Библиотека картинок и импорт
 
 | Метод и путь | Кто | Что делает |
@@ -162,6 +166,8 @@ DELETE /v1/sessions/current → 204, тела нет
 | `DELETE /v1/campaigns/{id}/scenes/{sid}/tokens/{tid}` | мастер | убрать фишку |
 | `GET /v1/campaigns/{id}/scenes/{sid}/visibility?character={cid}` | участник | маска для персонажа |
 
+`character_id` — необязательная связь с листом. Фишка несёт `character_id` и
+`character_name`; при создании с листом имя и `hp`/`hp_max` берутся из листа, если не заданы.
 `hidden` — токен не приходит игрокам вовсе, а не «приходит серым». Союзники видны всегда,
 но видно фишку, а не комнату вокруг неё. Тёмное зрение — число футов, 0 — его нет.
 
@@ -221,8 +227,8 @@ DELETE /v1/sessions/current → 204, тела нет
 | `type` | Поля | Кто |
 |---|---|---|
 | `token.move` | `token_id`, `x`, `y` | игрок — своим, мастер — любым |
-| `token.place` | `name`, `owner_id`, `x`, `y` | только мастер: стены не проверяются |
-| `token.update` | `token_id`, `hp`, `hp_max`, `initiative`, `darkvision_ft` | владелец фишки, мастер |
+| `token.place` | `name`, `owner_id`, `character_id`, `x`, `y` | только мастер: стены не проверяются |
+| `token.update` | `token_id`, `hp`, `hp_max`, `initiative`, `darkvision_ft`, `character_id` | владелец фишки, мастер; `character_id` — только мастер |
 | `door.set` | `door_id`, `open` | мастер; игрок — дверь рядом |
 | `scene.show` | `scene_id` | мастер |
 | `turn.next` | — | мастер |
@@ -250,6 +256,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `visibility` | `mask` (`visible`, `explored`); `as_account` — для режима мастера |
 | `roll` | `formula`, `values`, `total`, `visibility`, кому видно |
 | `chat.said` | `message_id`, `text`, `channel`, `actor` |
+| `character.changed` | `character` — лист после изменения HP |
 | `actions` | новый список доступных действий, когда меняется роль или сцена |
 
 **Обрыв и повтор.** Клиент переподключается и присылает `last_seq`; сервер доигрывает

@@ -53,27 +53,28 @@ var tableUpgrader = websocket.Upgrader{
 }
 
 type tableMessage struct {
-	Type       string  `json:"type"`
-	Text       string  `json:"text,omitempty"`
-	Channel    string  `json:"channel,omitempty"`
-	To         string  `json:"to,omitempty"`
-	IntentID   string  `json:"intent_id,omitempty"`
-	TokenID    string  `json:"token_id,omitempty"`
-	SceneID    string  `json:"scene_id,omitempty"`
-	DoorID     string  `json:"door_id,omitempty"`
-	Name       string  `json:"name,omitempty"`
-	OwnerID    string  `json:"owner_id,omitempty"`
-	AccountID  string  `json:"account_id,omitempty"`
-	Open       bool    `json:"open,omitempty"`
-	X          float64 `json:"x,omitempty"`
-	Y          float64 `json:"y,omitempty"`
-	HP         *int    `json:"hp,omitempty"`
-	HPMax      *int    `json:"hp_max,omitempty"`
-	Initiative *int    `json:"initiative,omitempty"`
-	Darkvision *int    `json:"darkvision_ft,omitempty"`
-	Formula    string  `json:"formula,omitempty"`
-	Visibility string  `json:"visibility,omitempty"`
-	Light      string  `json:"light,omitempty"`
+	Type        string  `json:"type"`
+	Text        string  `json:"text,omitempty"`
+	Channel     string  `json:"channel,omitempty"`
+	To          string  `json:"to,omitempty"`
+	IntentID    string  `json:"intent_id,omitempty"`
+	TokenID     string  `json:"token_id,omitempty"`
+	SceneID     string  `json:"scene_id,omitempty"`
+	DoorID      string  `json:"door_id,omitempty"`
+	Name        string  `json:"name,omitempty"`
+	OwnerID     string  `json:"owner_id,omitempty"`
+	CharacterID *string `json:"character_id,omitempty"`
+	AccountID   string  `json:"account_id,omitempty"`
+	Open        bool    `json:"open,omitempty"`
+	X           float64 `json:"x,omitempty"`
+	Y           float64 `json:"y,omitempty"`
+	HP          *int    `json:"hp,omitempty"`
+	HPMax       *int    `json:"hp_max,omitempty"`
+	Initiative  *int    `json:"initiative,omitempty"`
+	Darkvision  *int    `json:"darkvision_ft,omitempty"`
+	Formula     string  `json:"formula,omitempty"`
+	Visibility  string  `json:"visibility,omitempty"`
+	Light       string  `json:"light,omitempty"`
 }
 
 func (r *tableRoom) send(conn *websocket.Conn, value any) error {
@@ -148,6 +149,17 @@ func (s *server) broadcastSceneChanged(campaignID, sceneID string, actor Account
 		"time":     s.now().UTC().Format(time.RFC3339),
 		"scene_id": sceneID,
 		"actor":    actor,
+	})
+}
+
+func (s *server) broadcastCharacterChanged(campaignID string, character Character, actor Account) {
+	room := s.hub.room(campaignID)
+	room.broadcast(map[string]any{
+		"type":      "character.changed",
+		"seq":       room.nextSeq(),
+		"time":      s.now().UTC().Format(time.RFC3339),
+		"character": character,
+		"actor":     actor,
 	})
 }
 
@@ -682,6 +694,43 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			ownerID := message.OwnerID
+			name := message.Name
+			characterID := ""
+			hp, hpMax := 10, 10
+			if message.CharacterID != nil && *message.CharacterID != "" {
+				character, ok := s.content.Character(campaign.ID, *message.CharacterID)
+				if !ok {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "bad_request", "message": "листа нет"},
+					})
+					continue
+				}
+				characterID = character.ID
+				if ownerID == "" {
+					ownerID = character.OwnerID
+				}
+				if strings.TrimSpace(name) == "" {
+					name = character.Name
+				}
+				hp, hpMax = characterStats(character)
+			}
+			if message.HPMax != nil {
+				hpMax = *message.HPMax
+			}
+			if message.HP != nil {
+				hp = *message.HP
+			}
+			if hpMax < 1 || hpMax > 9999 {
+				hpMax = 10
+			}
+			if hp < 0 {
+				hp = 0
+			}
+			if hp > hpMax {
+				hp = hpMax
+			}
 			if ownerID == "" {
 				ownerID = account.ID
 			} else if _, ok := s.content.Campaign(ownerID, campaign.ID); !ok {
@@ -692,7 +741,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			token, ok := s.content.CreateToken(campaign.ID, current, ownerID, message.Name, message.X, message.Y)
+			token, ok := s.content.CreateToken(campaign.ID, current, ownerID, name, message.X, message.Y)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -700,6 +749,14 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 					"error":     map[string]string{"code": "not_found", "message": "фишка не создалась"},
 				})
 				continue
+			}
+			if characterID != "" {
+				if linked, ok := s.content.SetTokenCharacter(campaign.ID, current, token.ID, characterID); ok {
+					token = linked
+				}
+			}
+			if updated, ok := s.content.SetTokenStats(campaign.ID, current, token.ID, hp, hpMax, token.Initiative); ok {
+				token = updated
 			}
 			if message.Darkvision != nil {
 				if *message.Darkvision < 0 || *message.Darkvision > 300 {
@@ -785,7 +842,38 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
+			characterID := token.CharacterID
+			characterHP, characterHPMax := 0, 0
+			if message.CharacterID != nil {
+				if !master(campaign.Role) {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "forbidden", "message": "лист назначает мастер"},
+					})
+					continue
+				}
+				characterID = *message.CharacterID
+				if characterID != "" {
+					character, ok := s.content.Character(campaign.ID, characterID)
+					if !ok {
+						_ = room.send(conn, map[string]any{
+							"type":      "error",
+							"intent_id": message.IntentID,
+							"error":     map[string]string{"code": "bad_request", "message": "листа нет"},
+						})
+						continue
+					}
+					characterHP, characterHPMax = characterStats(character)
+				}
+			}
 			hp, hpMax, initiative := token.HP, token.HPMax, token.Initiative
+			if characterHPMax > 0 && message.HPMax == nil {
+				hpMax = characterHPMax
+			}
+			if characterHPMax > 0 && message.HP == nil {
+				hp = characterHP
+			}
 			if message.HPMax != nil {
 				hpMax = *message.HPMax
 			}
@@ -837,6 +925,16 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 					"error":     map[string]string{"code": "not_found", "message": "фишка не сохранилась"},
 				})
 				continue
+			}
+			if message.CharacterID != nil && characterID != token.CharacterID {
+				if linked, ok := s.content.SetTokenCharacter(campaign.ID, current, token.ID, characterID); ok {
+					updated = linked
+				}
+			}
+			if characterID != "" && (hp != token.HP || hpMax != token.HPMax) {
+				if character, ok := s.content.SetCharacterHP(campaign.ID, characterID, hp, hpMax); ok {
+					s.broadcastCharacterChanged(campaign.ID, character, account)
+				}
 			}
 			if darkvision != token.Darkvision {
 				if changed, ok := s.content.SetTokenDarkvision(campaign.ID, current, token.ID, darkvision); ok {

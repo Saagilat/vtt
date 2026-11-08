@@ -788,8 +788,10 @@ func (d *DB) SetTurn(campaignID, sceneID, tokenID string, round int) bool {
 func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 	rows, err := d.db.Query(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
 		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
+		COALESCE(t.character_id, ''), COALESCE(ch.name, ''),
 		t.hp_current, t.hp_max, t.initiative, t.darkvision_ft
 		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
+		LEFT JOIN characters ch ON ch.id = t.character_id
 		WHERE t.campaign_id = ? AND t.scene_id = ? ORDER BY t.created_at, t.id`,
 		campaignID, sceneID)
 	if err != nil {
@@ -801,6 +803,7 @@ func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 		var token api.Token
 		if err := rows.Scan(&token.ID, &token.SceneID, &token.Name,
 			&token.X, &token.Y, &token.Color, &token.OwnerID, &token.OwnerLogin,
+			&token.CharacterID, &token.CharacterName,
 			&token.HP, &token.HPMax, &token.Initiative, &token.Darkvision); err != nil {
 			return nil
 		}
@@ -814,12 +817,15 @@ func (d *DB) Token(campaignID, sceneID, tokenID string) (api.Token, bool) {
 	var token api.Token
 	err := d.db.QueryRow(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
 		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
+		COALESCE(t.character_id, ''), COALESCE(ch.name, ''),
 		t.hp_current, t.hp_max, t.initiative, t.darkvision_ft
 		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
+		LEFT JOIN characters ch ON ch.id = t.character_id
 		WHERE t.campaign_id = ? AND t.scene_id = ? AND t.id = ?`,
 		campaignID, sceneID, tokenID).
 		Scan(&token.ID, &token.SceneID, &token.Name, &token.X, &token.Y,
 			&token.Color, &token.OwnerID, &token.OwnerLogin,
+			&token.CharacterID, &token.CharacterName,
 			&token.HP, &token.HPMax, &token.Initiative, &token.Darkvision)
 	if err != nil {
 		return api.Token{}, false
@@ -879,6 +885,47 @@ func (d *DB) SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initi
 		return api.Token{}, false
 	}
 	return d.Token(campaignID, sceneID, tokenID)
+}
+
+// SetTokenCharacter связывает фишку с листом; пустой characterID снимает связь.
+func (d *DB) SetTokenCharacter(campaignID, sceneID, tokenID, characterID string) (api.Token, bool) {
+	var character any
+	if characterID != "" {
+		character = characterID
+	}
+	if _, err := d.db.Exec(`UPDATE tokens SET character_id = ?
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		character, campaignID, sceneID, tokenID); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, tokenID)
+}
+
+// SetCharacterHP меняет HP в данных листа, сохраняя остальные поля.
+func (d *DB) SetCharacterHP(campaignID, characterID string, hp, hpMax int) (api.Character, bool) {
+	character, ok := d.Character(campaignID, characterID)
+	if !ok {
+		return api.Character{}, false
+	}
+	sheet := map[string]any{}
+	if err := json.Unmarshal(character.Data, &sheet); err != nil {
+		sheet = map[string]any{}
+	}
+	sheet["hp"] = hp
+	sheet["max_hp"] = hpMax
+	data, err := json.Marshal(sheet)
+	if err != nil {
+		return api.Character{}, false
+	}
+	return d.UpdateCharacter(campaignID, characterID, character.Name, data)
+}
+
+// SetCharacterTokensHP переносит HP листа на все связанные фишки кампании.
+func (d *DB) SetCharacterTokensHP(campaignID, characterID string, hp, hpMax int) bool {
+	_, err := d.db.Exec(`UPDATE tokens SET hp_current = ?, hp_max = ?
+		WHERE campaign_id = ? AND character_id = ?`,
+		hp, hpMax, campaignID, characterID)
+	return err == nil
 }
 
 func (d *DB) Scenes(campaignID string) []api.SceneSummary {

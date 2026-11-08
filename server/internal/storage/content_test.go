@@ -339,6 +339,51 @@ func TestTableChat(t *testing.T) {
 		t.Fatalf("ответ движения: %+v", reply)
 	}
 
+	character, ok := db.CreateCharacter(campaign.ID, "", "Мира",
+		[]byte(`{"class":"воин","level":2,"hp":9,"max_hp":14}`))
+	if !ok {
+		t.Fatal("лист для фишки не создался")
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.place", "character_id": character.ID, "x": 10, "y": 12, "intent_id": "i2b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("token.place с листом: %v", err)
+	}
+	linked, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.placed" || !ok || linked["character_id"] != character.ID ||
+		linked["name"] != "Мира" || linked["hp"] != float64(9) || linked["hp_max"] != float64(14) {
+		t.Fatalf("фишка с листом: %+v", reply)
+	}
+	linkedID, _ := linked["id"].(string)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.update", "token_id": linkedID, "hp": 4, "intent_id": "i2c",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("character.changed: %v", err)
+	}
+	if reply["type"] != "character.changed" {
+		t.Fatalf("нет события листа: %+v", reply)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("token.updated: %v", err)
+	}
+	if reply["type"] != "token.updated" {
+		t.Fatalf("нет события фишки: %+v", reply)
+	}
+	character, ok = db.Character(campaign.ID, character.ID)
+	if !ok {
+		t.Fatal("лист потерялся")
+	}
+	var sheet map[string]any
+	if err := json.Unmarshal(character.Data, &sheet); err != nil || sheet["hp"] != float64(4) {
+		t.Fatalf("HP листа после фишки: %s", character.Data)
+	}
+
 	if err := conn.WriteJSON(map[string]any{
 		"type": "scene.show", "scene_id": scene2.ID, "intent_id": "i4",
 	}); err != nil {
@@ -485,6 +530,64 @@ func TestCharacterREST(t *testing.T) {
 	handler.ServeHTTP(rec, foreign)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("игрок не должен править чужой лист: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestTokenCharacterSync(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene, err := db.CreateScene(campaign.ID, image.ID, "Зал", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, ok := db.CreateCharacter(campaign.ID, alice.ID, "Мира",
+		[]byte(`{"class":"следопыт","level":3,"hp":7,"max_hp":12}`))
+	if !ok {
+		t.Fatal("лист не создался")
+	}
+	token, ok := db.CreateToken(campaign.ID, scene.ID, alice.ID, "Мира", 10, 10)
+	if !ok {
+		t.Fatal("фишка не создалась")
+	}
+	linked, ok := db.SetTokenCharacter(campaign.ID, scene.ID, token.ID, character.ID)
+	if !ok || linked.CharacterID != character.ID || linked.CharacterName != "Мира" {
+		t.Fatalf("связь с листом: %+v", linked)
+	}
+	if updated, ok := db.SetTokenStats(campaign.ID, scene.ID, token.ID, 7, 12, 0); !ok || updated.HP != 7 {
+		t.Fatalf("HP фишки: %+v", updated)
+	}
+	if _, ok := db.SetCharacterHP(campaign.ID, character.ID, 3, 12); !ok {
+		t.Fatal("HP листа не сохранились")
+	}
+	if !db.SetCharacterTokensHP(campaign.ID, character.ID, 3, 12) {
+		t.Fatal("HP фишек не синхронизировались")
+	}
+	synced, ok := db.Token(campaign.ID, scene.ID, token.ID)
+	if !ok || synced.HP != 3 || synced.HPMax != 12 {
+		t.Fatalf("синхронизация HP: %+v", synced)
+	}
+	character, ok = db.Character(campaign.ID, character.ID)
+	if !ok {
+		t.Fatal("лист потерялся")
+	}
+	var sheet map[string]any
+	if err := json.Unmarshal(character.Data, &sheet); err != nil || sheet["hp"] != float64(3) {
+		t.Fatalf("HP в листе: %s", character.Data)
+	}
+	unlinked, ok := db.SetTokenCharacter(campaign.ID, scene.ID, token.ID, "")
+	if !ok || unlinked.CharacterID != "" {
+		t.Fatalf("связь не снялась: %+v", unlinked)
 	}
 }
 
