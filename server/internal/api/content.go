@@ -744,6 +744,17 @@ func (s *server) listNotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := s.content.Notes(campaign.ID, account.ID)
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	if query != "" {
+		filtered := make([]Note, 0, len(items))
+		for _, note := range items {
+			haystack := strings.ToLower(note.Title + "\n" + note.Body)
+			if strings.Contains(haystack, query) {
+				filtered = append(filtered, note)
+			}
+		}
+		items = filtered
+	}
 	if items == nil {
 		items = []Note{}
 	}

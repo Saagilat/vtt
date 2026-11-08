@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -775,6 +776,31 @@ func TestNotesREST(t *testing.T) {
 	handler.ServeHTTP(rec, bobList)
 	if !strings.Contains(rec.Body.String(), "Секрет Боба") {
 		t.Fatalf("автор не видит личную заметку: %s", rec.Body)
+	}
+
+	masterSearch := httptest.NewRequest("GET",
+		"/v1/campaigns/"+campaign.ID+"/notes?q="+url.QueryEscape("ТАВЕРНА"), nil)
+	masterSearch.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterSearch)
+	if !strings.Contains(rec.Body.String(), "Таверна") {
+		t.Fatalf("поиск не нашёл общую заметку: %s", rec.Body)
+	}
+	masterPrivateSearch := httptest.NewRequest("GET",
+		"/v1/campaigns/"+campaign.ID+"/notes?q="+url.QueryEscape("СЕКРЕТ"), nil)
+	masterPrivateSearch.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterPrivateSearch)
+	if strings.Contains(rec.Body.String(), "Секрет Боба") {
+		t.Fatalf("поиск мастера нашёл личную заметку: %s", rec.Body)
+	}
+	bobSearch := httptest.NewRequest("GET",
+		"/v1/campaigns/"+campaign.ID+"/notes?q="+url.QueryEscape("СЕКРЕТ"), nil)
+	bobSearch.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, bobSearch)
+	if !strings.Contains(rec.Body.String(), "Секрет Боба") {
+		t.Fatalf("поиск автора не нашёл личную заметку: %s", rec.Body)
 	}
 	masterPatch := httptest.NewRequest("PATCH",
 		"/v1/campaigns/"+campaign.ID+"/notes/"+bobNote.ID,

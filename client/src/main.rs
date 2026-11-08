@@ -228,6 +228,18 @@ fn ability_formula(score: i32) -> String {
     check_formula(ability_modifier(score))
 }
 
+fn query_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 fn sheet_flag(data: &Value, section: &str, key: &str) -> bool {
     data.get(section)
         .and_then(|section| section.get(key))
@@ -385,6 +397,7 @@ struct App {
     note_title: String,
     note_body: String,
     note_private: bool,
+    note_query: String,
     new_note_title: String,
     new_note_private: bool,
     confirm_owner: Option<String>,
@@ -490,6 +503,7 @@ impl App {
             note_title: String::new(),
             note_body: String::new(),
             note_private: false,
+            note_query: String::new(),
             new_note_title: String::new(),
             new_note_private: false,
             confirm_owner: None,
@@ -1113,7 +1127,17 @@ impl App {
             Some(campaign) => campaign.clone(),
             None => return,
         };
-        match self.get_json::<NoteList>(&format!("/v1/campaigns/{}/notes", campaign.id)) {
+        let query = self.note_query.trim();
+        let path = if query.is_empty() {
+            format!("/v1/campaigns/{}/notes", campaign.id)
+        } else {
+            format!(
+                "/v1/campaigns/{}/notes?q={}",
+                campaign.id,
+                query_encode(query)
+            )
+        };
+        match self.get_json::<NoteList>(&path) {
             Ok(list) => {
                 self.notes = list.items;
                 let selected_exists = self
@@ -1166,6 +1190,7 @@ impl App {
             Ok(note) => {
                 self.new_note_title.clear();
                 self.new_note_private = false;
+                self.note_query.clear();
                 self.load_notes();
                 self.select_note(&note.id);
                 self.notice = format!("запись «{}» создана", note.title);
@@ -1196,6 +1221,7 @@ impl App {
         {
             Ok(note) => {
                 self.notice = format!("запись «{}» сохранена", note.title);
+                self.note_query.clear();
                 self.load_notes();
                 self.select_note(&note.id);
             }
@@ -3605,6 +3631,26 @@ impl App {
         if self.panel_tab == PanelTab::Journal {
             ui.separator();
             ui.heading("Журнал кампании");
+            let mut search = false;
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.note_query)
+                        .hint_text("поиск по заголовку и тексту")
+                        .desired_width(200.0),
+                );
+                search |=
+                    response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
+                if ui.button("Найти").clicked() {
+                    search = true;
+                }
+                if !self.note_query.is_empty() && ui.button("Сброс").clicked() {
+                    self.note_query.clear();
+                    search = true;
+                }
+            });
+            if search {
+                self.load_notes();
+            }
             let notes = self.notes.clone();
             if notes.is_empty() {
                 ui.label(
@@ -4002,6 +4048,16 @@ mod tests {
         assert_eq!(token.hp_max, 10);
         assert_eq!(token.initiative, 0);
         assert!(token.owner_login.is_empty());
+    }
+
+    #[test]
+    fn query_encode_percent_encodes_utf8() {
+        assert_eq!(query_encode("dragon"), "dragon");
+        assert_eq!(
+            query_encode("таверна"),
+            "%D1%82%D0%B0%D0%B2%D0%B5%D1%80%D0%BD%D0%B0"
+        );
+        assert_eq!(query_encode("a b+c"), "a%20b%2Bc");
     }
 
     #[test]
