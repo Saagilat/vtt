@@ -1,11 +1,15 @@
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use eframe::egui;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::HeaderValue;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -63,6 +67,12 @@ struct SessionFile {
     token: String,
 }
 
+enum ChatEvent {
+    Connected,
+    Message(String),
+    Error(String),
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct Scene {
     #[allow(dead_code)]
@@ -107,6 +117,10 @@ struct App {
     image_path: String,
     annotation_path: String,
     scene_name: String,
+    chat_rx: Option<Receiver<ChatEvent>>,
+    chat_input: String,
+    chat_lines: Vec<String>,
+    chat_status: String,
     #[allow(dead_code)]
     install_dir: Option<PathBuf>,
 }
@@ -138,6 +152,10 @@ impl App {
             image_path: String::new(),
             annotation_path: String::new(),
             scene_name: "Сцена".to_string(),
+            chat_rx: None,
+            chat_input: String::new(),
+            chat_lines: Vec::new(),
+            chat_status: String::new(),
             install_dir,
         };
         app.resume_session();
@@ -206,6 +224,9 @@ impl App {
         self.scenes.clear();
         self.scene = None;
         self.texture = None;
+        self.chat_rx = None;
+        self.chat_lines.clear();
+        self.chat_status.clear();
         self.screen = Screen::Login;
         self.notice = "вы вышли".to_string();
     }
@@ -305,6 +326,7 @@ impl App {
                 self.offset = egui::Vec2::ZERO;
                 self.scene = Some(scene);
                 self.screen = Screen::Scene;
+                self.connect_table(&campaign.id);
             }
             Err(error) => self.error = error,
         }
@@ -650,12 +672,164 @@ impl App {
             Err(error) => self.error = error,
         }
     }
+    fn ws_url(&self, campaign_id: &str) -> String {
+        let base = if let Some(rest) = self.base_url.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else if let Some(rest) = self.base_url.strip_prefix("http://") {
+            format!("ws://{rest}")
+        } else {
+            self.base_url.clone()
+        };
+        format!(
+            "{}/v1/campaigns/{campaign_id}/table",
+            base.trim_end_matches('/')
+        )
+    }
+
+    fn connect_table(&mut self, campaign_id: &str) {
+        self.chat_rx = None;
+        self.chat_lines.clear();
+        self.chat_status = "подключение…".to_string();
+        let (token, url) = match (&self.token, self.ws_url(campaign_id)) {
+            (Some(token), url) => (token.clone(), url),
+            _ => return,
+        };
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut request = match url.as_str().into_client_request() {
+                Ok(request) => request,
+                Err(error) => {
+                    let _ = sender.send(ChatEvent::Error(error.to_string()));
+                    return;
+                }
+            };
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
+                request.headers_mut().insert("Authorization", value);
+            }
+            let (mut socket, _) = match tungstenite::connect(request) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let _ = sender.send(ChatEvent::Error(error.to_string()));
+                    return;
+                }
+            };
+            let _ = sender.send(ChatEvent::Connected);
+            loop {
+                match socket.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        let text: &str = &text;
+                        let value: Value = match serde_json::from_str(text) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        match value["type"].as_str() {
+                            Some("chat.said") => {
+                                let actor = value["actor"]["login"].as_str().unwrap_or("?");
+                                let body = value["text"].as_str().unwrap_or("");
+                                let _ = sender.send(ChatEvent::Message(format!("{actor}: {body}")));
+                            }
+                            Some("error") => {
+                                let message =
+                                    value["error"]["message"].as_str().unwrap_or("ошибка");
+                                let _ = sender.send(ChatEvent::Error(message.to_string()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(tungstenite::Message::Close(_)) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = sender.send(ChatEvent::Error(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+        self.chat_rx = Some(receiver);
+    }
+
+    fn poll_chat(&mut self) {
+        let mut events = Vec::new();
+        if let Some(receiver) = &self.chat_rx {
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            match event {
+                ChatEvent::Connected => self.chat_status = "на связи".to_string(),
+                ChatEvent::Message(line) => self.chat_lines.push(line),
+                ChatEvent::Error(error) => self.chat_status = format!("ошибка: {error}"),
+            }
+        }
+    }
+
+    fn chat_send(&mut self) {
+        let text = self.chat_input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let token = match &self.token {
+            Some(token) => token.clone(),
+            None => return,
+        };
+        let url = self.ws_url(&campaign.id);
+        self.chat_input.clear();
+        thread::spawn(move || {
+            let mut request = match url.as_str().into_client_request() {
+                Ok(request) => request,
+                Err(_) => return,
+            };
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
+                request.headers_mut().insert("Authorization", value);
+            }
+            let (mut socket, _) = match tungstenite::connect(request) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    eprintln!("chat: {error}");
+                    return;
+                }
+            };
+            let _ = socket.read();
+            let payload = serde_json::json!({"type": "chat.say", "text": text});
+            let _ = socket.send(tungstenite::Message::text(payload.to_string()));
+            let _ = socket.close(None);
+        });
+    }
+
+    fn show_chat(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Стол");
+        ui.label(&self.chat_status);
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for line in &self.chat_lines {
+                    ui.label(line);
+                }
+            });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let response = ui.text_edit_singleline(&mut self.chat_input);
+            let entered =
+                response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
+            if ui.button("Сказать").clicked() || entered {
+                self.chat_send();
+            }
+        });
+    }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.make_texture(&ctx);
+        self.poll_chat();
         let account_login = self.account.as_ref().map(|account| account.login.clone());
         let base_url = self.base_url.clone();
         let logged = self.token.is_some();
@@ -688,6 +862,12 @@ impl eframe::App for App {
             egui::Panel::bottom("notice").show(ui, |ui| {
                 ui.label(&self.notice);
             });
+        }
+        if self.screen == Screen::Scene {
+            egui::Panel::right("chat")
+                .resizable(true)
+                .default_size(280.0)
+                .show(ui, |ui| self.show_chat(ui));
         }
         egui::CentralPanel::default().show(ui, |ui| match self.screen {
             Screen::Login => self.show_login(ui),

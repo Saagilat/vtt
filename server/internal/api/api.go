@@ -93,6 +93,7 @@ type server struct {
 	token     func() string
 	// auth — одна проверка пароля одновременно (server/API.md, "busy").
 	auth    chan struct{}
+	hub     *tableHub
 	handler http.Handler
 }
 
@@ -115,6 +116,7 @@ func New(cfg Config) (http.Handler, error) {
 		now:       cfg.Now,
 		token:     cfg.Token,
 		auth:      make(chan struct{}, 1),
+		hub:       newTableHub(),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -135,6 +137,7 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("POST /v1/campaigns/{id}/scenes:import", s.importScene)
 		mux.HandleFunc("GET /v1/campaigns/{id}/scenes", s.listScenes)
 		mux.HandleFunc("GET /v1/campaigns/{id}/scenes/{sid}", s.getScene)
+		mux.HandleFunc("GET /v1/campaigns/{id}/table", s.table)
 	}
 	mux.HandleFunc("/", s.notFound)
 	s.handler = mux

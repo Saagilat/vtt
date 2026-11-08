@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/Saagilat/vtt/server/internal/annotation"
 	"github.com/Saagilat/vtt/server/internal/api"
 )
@@ -249,5 +251,50 @@ func TestImportRejectsBrokenAnnotation(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `contract_code`) {
 		t.Fatalf("нет contract_code: %s", rec.Body)
+	}
+}
+
+func TestTableChat(t *testing.T) {
+	handler, _, _ := newContentHandler(t)
+	token := login(t, handler, "alice", "пароль")
+
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Стол"}`))
+	create.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"/v1/campaigns/" + campaign.ID + "/table"
+	header := http.Header{"Authorization": []string{"Bearer " + token}}
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatalf("websocket: %v", err)
+	}
+	defer conn.Close()
+
+	var hello map[string]any
+	if err := conn.ReadJSON(&hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if hello["type"] != "hello" {
+		t.Fatalf("первый кадр: %+v", hello)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat.say", "text": "привет столу", "intent_id": "i1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reply map[string]any
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if reply["type"] != "chat.said" || reply["text"] != "привет столу" {
+		t.Fatalf("ответ чата: %+v", reply)
 	}
 }
