@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vtt-annotator"
+description = "Разметчик карт: подготовленная картинка → annotation.json"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dynamic = ["version"]
+dependencies = []
+
+[project.optional-dependencies]
+check = ["jsonschema==4.*"]
+
+[project.scripts]
+vtt-annotate = "vtt_annotator.cli:main"
+
+[tool.setuptools]
+packages = ["vtt_annotator"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vtt_annotator.__version__" }

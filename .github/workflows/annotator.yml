@@ -1,0 +1,38 @@
+name: annotator
+
+# CI по путям (docs/projects.md, правило 4): правка в annotator/ запускает только его, а правка
+# в contract/ запускает контрактные тесты потребителя — набор случаев читается тот же.
+on:
+  push:
+    paths:
+      - 'annotator/**'
+      - 'contract/**'
+      - 'scripts/validate_annotation.py'
+      - '.github/workflows/annotator.yml'
+  pull_request:
+    paths:
+      - 'annotator/**'
+      - 'contract/**'
+      - 'scripts/validate_annotation.py'
+      - '.github/workflows/annotator.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Библиотека схемы — версия прибита
+        run: pip install 'jsonschema==4.*'
+      - name: Манифест и команда из него — vtt-annotate
+        run: |
+          python3 -m pip install --no-deps annotator
+          vtt-annotate --version
+      - name: Командная строка — флаги, режимы и коды возврата
+        run: python3 -m unittest discover -s annotator/tests -v
+      - name: Предварительный файл — инвариант из annotator/PREVIEW.md
+        run: python3 annotator/tests/check_preview.py
+      - name: Контракт — те же случаи, что у контракта и сервера
+        run: python3 scripts/validate_annotation.py --cases contract/cases
