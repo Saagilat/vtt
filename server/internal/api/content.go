@@ -82,6 +82,17 @@ type ChatMessage struct {
 	Actor       Account `json:"actor"`
 }
 
+// Character — лист персонажа. Поля листа живут в Data, чтобы клиент и будущие
+// системы правил не требовали миграции под каждое поле.
+type Character struct {
+	ID         string          `json:"id"`
+	OwnerID    string          `json:"owner_id,omitempty"`
+	OwnerLogin string          `json:"owner_login,omitempty"`
+	Name       string          `json:"name"`
+	Approved   bool            `json:"approved"`
+	Data       json.RawMessage `json:"data"`
+}
+
 // TokenPatch — изменение характеристик фишки. nil значит «не трогать».
 type TokenPatch struct {
 	HP         *int
@@ -141,6 +152,10 @@ type Content interface {
 	SetTurn(campaignID, sceneID, tokenID string, round int) bool
 	AddChatMessage(campaignID, accountID, toAccountID, text, channel string) (ChatMessage, bool)
 	ChatMessages(campaignID string, limit int) []ChatMessage
+	Characters(campaignID string) []Character
+	Character(campaignID, characterID string) (Character, bool)
+	CreateCharacter(campaignID, ownerID, name string, data []byte) (Character, bool)
+	UpdateCharacter(campaignID, characterID, name string, data []byte) (Character, bool)
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.
@@ -510,5 +525,142 @@ func (s *server) updateSceneAnnotation(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broadcastSceneChanged(campaign.ID, updated.ID, account)
 	s.sendVisibility(s.hub.room(campaign.ID), campaign.ID, updated.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// characterData проверяет, что лист — JSON-объект, и подставляет {}.
+func characterData(raw json.RawMessage) ([]byte, bool) {
+	if len(raw) == 0 {
+		return []byte("{}"), true
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+func (s *server) listCharacters(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	items := s.content.Characters(campaign.ID)
+	if items == nil {
+		items = []Character{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next": nil})
+}
+
+func (s *server) getCharacter(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	character, ok := s.content.Character(campaign.ID, r.PathValue("cid"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "листа нет")
+		return
+	}
+	writeJSON(w, http.StatusOK, character)
+}
+
+func (s *server) createCharacter(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	var req struct {
+		Name    string          `json:"name"`
+		OwnerID string          `json:"owner_id"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ownerID := account.ID
+	if req.OwnerID != "" {
+		if !master(campaign.Role) {
+			writeError(w, http.StatusForbidden, "forbidden", "владельца назначает мастер")
+			return
+		}
+		if _, ok := s.content.Campaign(req.OwnerID, campaign.ID); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", "владелец не в кампании")
+			return
+		}
+		ownerID = req.OwnerID
+	}
+	data, ok := characterData(req.Data)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "лист должен быть JSON-объектом")
+		return
+	}
+	character, ok := s.content.CreateCharacter(campaign.ID, ownerID, strings.TrimSpace(req.Name), data)
+	if !ok {
+		writeError(w, http.StatusConflict, "conflict", "лист не создался")
+		return
+	}
+	writeJSON(w, http.StatusCreated, character)
+}
+
+func (s *server) updateCharacter(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	character, ok := s.content.Character(campaign.ID, r.PathValue("cid"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "листа нет")
+		return
+	}
+	if !master(campaign.Role) && character.OwnerID != account.ID {
+		writeError(w, http.StatusForbidden, "forbidden", "чужой лист")
+		return
+	}
+	var req struct {
+		Name *string         `json:"name"`
+		Data json.RawMessage `json:"data"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	data, ok := characterData(req.Data)
+	if req.Data == nil {
+		data = character.Data
+		ok = true
+	}
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "лист должен быть JSON-объектом")
+		return
+	}
+	name := character.Name
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	updated, ok := s.content.UpdateCharacter(campaign.ID, character.ID, name, data)
+	if !ok {
+		writeError(w, http.StatusConflict, "conflict", "лист не сохранился")
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }

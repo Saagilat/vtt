@@ -575,6 +575,90 @@ func (d *DB) SaveExploredMask(campaignID, sceneID, accountID string, data []byte
 	return err == nil
 }
 
+func (d *DB) characterRow(query string, args ...any) (api.Character, bool) {
+	var character api.Character
+	var data string
+	err := d.db.QueryRow(query, args...).Scan(&character.ID, &character.Name,
+		&data, &character.Approved, &character.OwnerID, &character.OwnerLogin)
+	if err != nil {
+		return api.Character{}, false
+	}
+	character.Data = json.RawMessage(data)
+	return character, true
+}
+
+// Characters — все листы кампании с логинами владельцев.
+func (d *DB) Characters(campaignID string) []api.Character {
+	rows, err := d.db.Query(`SELECT c.id, c.name, c.data, c.approved,
+		COALESCE(c.owner_id, ''), COALESCE(a.login, '')
+		FROM characters c LEFT JOIN accounts a ON a.id = c.owner_id
+		WHERE c.campaign_id = ? ORDER BY c.name, c.id`, campaignID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]api.Character, 0, 8)
+	for rows.Next() {
+		var character api.Character
+		var data string
+		if err := rows.Scan(&character.ID, &character.Name, &data, &character.Approved,
+			&character.OwnerID, &character.OwnerLogin); err != nil {
+			return nil
+		}
+		character.Data = json.RawMessage(data)
+		out = append(out, character)
+	}
+	return out
+}
+
+// Character — один лист.
+func (d *DB) Character(campaignID, characterID string) (api.Character, bool) {
+	return d.characterRow(`SELECT c.id, c.name, c.data, c.approved,
+		COALESCE(c.owner_id, ''), COALESCE(a.login, '')
+		FROM characters c LEFT JOIN accounts a ON a.id = c.owner_id
+		WHERE c.campaign_id = ? AND c.id = ?`, campaignID, characterID)
+}
+
+// CreateCharacter заводит лист. Права владельца проверяет API.
+func (d *DB) CreateCharacter(campaignID, ownerID, name string, data []byte) (api.Character, bool) {
+	if strings.TrimSpace(name) == "" {
+		name = "Персонаж"
+	}
+	id, err := newID("h")
+	if err != nil {
+		return api.Character{}, false
+	}
+	var owner any
+	if ownerID != "" {
+		owner = ownerID
+	}
+	_, err = d.db.Exec(`INSERT INTO characters
+		(id, campaign_id, owner_id, name, data, approved, created_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?)`,
+		id, campaignID, owner, name, string(data), time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return api.Character{}, false
+	}
+	return d.Character(campaignID, id)
+}
+
+// UpdateCharacter сохраняет лист; права проверяет API.
+func (d *DB) UpdateCharacter(campaignID, characterID, name string, data []byte) (api.Character, bool) {
+	if strings.TrimSpace(name) == "" {
+		name = "Персонаж"
+	}
+	result, err := d.db.Exec(`UPDATE characters SET name = ?, data = ?
+		WHERE campaign_id = ? AND id = ?`, name, string(data), campaignID, characterID)
+	if err != nil {
+		return api.Character{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return api.Character{}, false
+	}
+	return d.Character(campaignID, characterID)
+}
+
 // AddChatMessage сохраняет сообщение и возвращает его с логинами автора и получателя.
 func (d *DB) AddChatMessage(campaignID, accountID, toAccountID, text, channel string) (api.ChatMessage, bool) {
 	id, err := newID("m")

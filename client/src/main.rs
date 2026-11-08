@@ -78,6 +78,26 @@ struct ImageInfo {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct Character {
+    id: String,
+    #[serde(default)]
+    owner_id: String,
+    #[serde(default)]
+    owner_login: String,
+    name: String,
+    #[serde(default)]
+    approved: bool,
+    #[serde(default)]
+    data: Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CharacterList {
+    #[serde(default)]
+    items: Vec<Character>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct SceneSummary {
     id: String,
     name: String,
@@ -181,6 +201,7 @@ enum Screen {
 enum PanelTab {
     Chat,
     Combat,
+    Sheet,
     Master,
 }
 
@@ -215,6 +236,15 @@ struct App {
     scene_name: String,
     join_code: String,
     invite_code: String,
+    characters: Vec<Character>,
+    selected_character: Option<String>,
+    sheet_name: String,
+    sheet_class: String,
+    sheet_level: i32,
+    sheet_hp: i32,
+    sheet_hp_max: i32,
+    sheet_notes: String,
+    new_character_name: String,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
     chat_channel: String,
@@ -291,6 +321,15 @@ impl App {
             roll_formula: "1d20".to_string(),
             preview_account: String::new(),
             preview_name: None,
+            characters: Vec::new(),
+            selected_character: None,
+            sheet_name: "Персонаж".to_string(),
+            sheet_class: String::new(),
+            sheet_level: 1,
+            sheet_hp: 10,
+            sheet_hp_max: 10,
+            sheet_notes: String::new(),
+            new_character_name: String::new(),
             visibility: None,
             pending_visibility: None,
             fog_texture: None,
@@ -405,6 +444,19 @@ impl App {
 
     fn put_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
         let request = ureq::put(&format!("{}{}", self.base_url, path));
+        let request = match &self.token {
+            Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+            None => request,
+        };
+        request
+            .send_json(body)
+            .map_err(format_error)?
+            .into_json::<T>()
+            .map_err(|error| error.to_string())
+    }
+
+    fn patch_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
+        let request = ureq::patch(&format!("{}{}", self.base_url, path));
         let request = match &self.token {
             Some(token) => request.set("Authorization", &format!("Bearer {token}")),
             None => request,
@@ -600,8 +652,129 @@ impl App {
             None => return,
         };
         self.screen = Screen::Scene;
+        self.load_characters();
         let scene_id = self.current_scene_id();
         self.connect_table(&campaign.id, &scene_id);
+    }
+
+    fn load_characters(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.get_json::<CharacterList>(&format!("/v1/campaigns/{}/characters", campaign.id)) {
+            Ok(list) => {
+                self.characters = list.items;
+                let selected_exists = self
+                    .selected_character
+                    .as_ref()
+                    .is_some_and(|id| self.characters.iter().any(|item| &item.id == id));
+                if !selected_exists {
+                    let first = self.characters.first().map(|item| item.id.clone());
+                    if let Some(id) = first {
+                        self.select_character(&id);
+                    } else {
+                        self.selected_character = None;
+                    }
+                }
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn select_character(&mut self, id: &str) {
+        let character = match self.characters.iter().find(|item| item.id == id) {
+            Some(character) => character.clone(),
+            None => return,
+        };
+        self.selected_character = Some(character.id.clone());
+        self.sheet_name = character.name.clone();
+        self.sheet_class = character
+            .data
+            .get("class")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.sheet_level = character
+            .data
+            .get("level")
+            .and_then(Value::as_i64)
+            .unwrap_or(1) as i32;
+        self.sheet_hp = character
+            .data
+            .get("hp")
+            .and_then(Value::as_i64)
+            .unwrap_or(10) as i32;
+        self.sheet_hp_max = character
+            .data
+            .get("max_hp")
+            .and_then(Value::as_i64)
+            .unwrap_or(10) as i32;
+        self.sheet_notes = character
+            .data
+            .get("notes")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+    }
+
+    fn sheet_data(&self) -> Value {
+        serde_json::json!({
+            "class": self.sheet_class.trim(),
+            "level": self.sheet_level.max(1),
+            "hp": self.sheet_hp.max(0),
+            "max_hp": self.sheet_hp_max.max(0),
+            "notes": self.sheet_notes.trim(),
+        })
+    }
+
+    fn create_character(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let name = if self.new_character_name.trim().is_empty() {
+            "Новый герой"
+        } else {
+            self.new_character_name.trim()
+        };
+        let body = serde_json::json!({"name": name, "data": self.sheet_data()});
+        match self
+            .post_json::<Character>(&format!("/v1/campaigns/{}/characters", campaign.id), body)
+        {
+            Ok(character) => {
+                self.new_character_name.clear();
+                self.notice = format!("лист «{}» создан", character.name);
+                self.load_characters();
+                self.select_character(&character.id);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn save_character(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let id = match &self.selected_character {
+            Some(id) => id.clone(),
+            None => {
+                self.create_character();
+                return;
+            }
+        };
+        let body = serde_json::json!({"name": self.sheet_name.trim(), "data": self.sheet_data()});
+        match self.patch_json::<Character>(
+            &format!("/v1/campaigns/{}/characters/{}", campaign.id, id),
+            body,
+        ) {
+            Ok(character) => {
+                self.notice = format!("лист «{}» сохранён", character.name);
+                self.load_characters();
+            }
+            Err(error) => self.error = error,
+        }
     }
 
     fn load_scene(&mut self, summary: &SceneSummary, tokens: Option<Vec<Token>>) -> bool {
@@ -2346,6 +2519,12 @@ impl App {
             {
                 self.panel_tab = PanelTab::Combat;
             }
+            if ui
+                .selectable_label(self.panel_tab == PanelTab::Sheet, "Лист")
+                .clicked()
+            {
+                self.panel_tab = PanelTab::Sheet;
+            }
             if self.is_master()
                 && ui
                     .selectable_label(self.panel_tab == PanelTab::Master, "Мастер")
@@ -2566,6 +2745,95 @@ impl App {
                     }
                 }
             }
+        }
+        if self.panel_tab == PanelTab::Sheet {
+            ui.separator();
+            ui.heading("Лист персонажа");
+            let characters = self.characters.clone();
+            if characters.is_empty() {
+                ui.label(
+                    egui::RichText::new("листов пока нет — создайте первый")
+                        .size(15.0)
+                        .color(WARM_MUTED),
+                );
+            }
+            for character in &characters {
+                let selected = self.selected_character.as_deref() == Some(character.id.as_str());
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(selected, format!("{}", character.name))
+                        .clicked()
+                    {
+                        self.select_character(&character.id);
+                    }
+                    if !character.owner_login.is_empty() {
+                        ui.weak(&character.owner_login);
+                    } else {
+                        ui.weak("без владельца");
+                    }
+                    if character.approved {
+                        ui.weak("✓");
+                    }
+                });
+            }
+            ui.separator();
+            let editable = self.selected_character.as_ref().is_some_and(|id| {
+                self.is_master()
+                    || self.characters.iter().any(|character| {
+                        &character.id == id
+                            && self
+                                .account
+                                .as_ref()
+                                .is_some_and(|account| account.id == character.owner_id)
+                    })
+            });
+            if self.selected_character.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label("Имя");
+                    ui.add(egui::TextEdit::singleline(&mut self.sheet_name).desired_width(170.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Класс");
+                    ui.add(egui::TextEdit::singleline(&mut self.sheet_class).desired_width(170.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Уровень");
+                    ui.add(egui::DragValue::new(&mut self.sheet_level).range(1..=30));
+                    ui.label("HP");
+                    ui.add(egui::DragValue::new(&mut self.sheet_hp).range(0..=9999));
+                    ui.label("/");
+                    ui.add(egui::DragValue::new(&mut self.sheet_hp_max).range(0..=9999));
+                });
+                ui.label("Заметки");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.sheet_notes)
+                        .desired_rows(5)
+                        .desired_width(f32::INFINITY),
+                );
+                if editable {
+                    if accent_button(ui, "Сохранить лист", 220.0).clicked() {
+                        self.save_character();
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("чужой лист — только просмотр")
+                            .size(15.0)
+                            .color(WARM_MUTED),
+                    );
+                }
+            }
+            ui.separator();
+            ui.label("Новый лист");
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_character_name)
+                        .hint_text("имя героя")
+                        .desired_width(170.0),
+                );
+                if ui.button("Создать").clicked() {
+                    self.create_character();
+                }
+            });
         }
         if self.panel_tab == PanelTab::Combat {
             ui.separator();

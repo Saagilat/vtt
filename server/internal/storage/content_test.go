@@ -384,6 +384,110 @@ func TestTableChat(t *testing.T) {
 	}
 }
 
+func TestCharacters(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, ok := db.CreateCharacter(campaign.ID, alice.ID, "Мира",
+		[]byte(`{"class":"следопыт","level":3,"hp":24,"max_hp":24}`))
+	if !ok {
+		t.Fatal("лист не создался")
+	}
+	if character.OwnerLogin != "alice" {
+		t.Fatalf("лист: %+v", character)
+	}
+	var sheet map[string]any
+	if err := json.Unmarshal(character.Data, &sheet); err != nil || sheet["level"] != float64(3) {
+		t.Fatalf("данные листа: %s", character.Data)
+	}
+	updated, ok := db.UpdateCharacter(campaign.ID, character.ID, "Мира Тень",
+		[]byte(`{"class":"следопыт","level":4,"hp":18,"max_hp":30}`))
+	if !ok || updated.Name != "Мира Тень" {
+		t.Fatalf("обновлённый лист: %+v", updated)
+	}
+	sheet = nil
+	if err := json.Unmarshal(updated.Data, &sheet); err != nil || sheet["hp"] != float64(18) {
+		t.Fatalf("данные обновлённого листа: %s", updated.Data)
+	}
+	items := db.Characters(campaign.ID)
+	if len(items) != 1 || items[0].ID != character.ID {
+		t.Fatalf("список листов: %+v", items)
+	}
+	if _, ok := db.Character(campaign.ID, "нет-такого"); ok {
+		t.Fatal("найден несуществующий лист")
+	}
+}
+
+func TestCharacterREST(t *testing.T) {
+	handler, db, account := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Вечер"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"name":"Мира","data":{"class":"следопыт","level":3,"hp":24,"max_hp":24}}`
+	createCharacter := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/characters",
+		strings.NewReader(body))
+	createCharacter.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, createCharacter)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("создание листа: %d %s", rec.Code, rec.Body)
+	}
+	var character api.Character
+	if err := json.Unmarshal(rec.Body.Bytes(), &character); err != nil {
+		t.Fatal(err)
+	}
+	if character.OwnerID != account.ID || character.Name != "Мира" {
+		t.Fatalf("лист: %+v", character)
+	}
+
+	patch := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/characters/"+character.ID,
+		strings.NewReader(`{"name":"Мира Тень","data":{"class":"следопыт","level":4,"hp":18}}`))
+	patch.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, patch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("правка листа: %d %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &character); err != nil {
+		t.Fatal(err)
+	}
+	if character.Name != "Мира Тень" || !strings.Contains(string(character.Data), `"level":4`) {
+		t.Fatalf("правка: %+v", character)
+	}
+
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, handler, "bob", "пароль")
+	if err := db.AddMember(bobAccount.ID, campaign.ID, "player"); err != nil {
+		t.Fatal(err)
+	}
+	foreign := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/characters/"+character.ID,
+		strings.NewReader(`{"data":{}}`))
+	foreign.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, foreign)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("игрок не должен править чужой лист: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestInviteJoinByCode(t *testing.T) {
 	handler, db, account := newContentHandler(t)
 	alice := login(t, handler, "alice", "пароль")
