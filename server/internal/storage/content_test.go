@@ -255,7 +255,7 @@ func TestImportRejectsBrokenAnnotation(t *testing.T) {
 }
 
 func TestTableChat(t *testing.T) {
-	handler, _, _ := newContentHandler(t)
+	handler, db, _ := newContentHandler(t)
 	token := login(t, handler, "alice", "пароль")
 
 	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Стол"}`))
@@ -266,11 +266,19 @@ func TestTableChat(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
 		t.Fatal(err)
 	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene, err := db.CreateScene(campaign.ID, image.ID, "Зал", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	url := "ws" + strings.TrimPrefix(server.URL, "http") +
-		"/v1/campaigns/" + campaign.ID + "/table"
+		"/v1/campaigns/" + campaign.ID + "/table?scene_id=" + scene.ID
 	header := http.Header{"Authorization": []string{"Bearer " + token}}
 	conn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
@@ -296,5 +304,31 @@ func TestTableChat(t *testing.T) {
 	}
 	if reply["type"] != "chat.said" || reply["text"] != "привет столу" {
 		t.Fatalf("ответ чата: %+v", reply)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.place", "name": "Герой", "x": 20, "y": 30, "intent_id": "i2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("token.place: %v", err)
+	}
+	placed, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.placed" || !ok || placed["name"] != "Герой" {
+		t.Fatalf("ответ фишки: %+v", reply)
+	}
+	tokenID, _ := placed["id"].(string)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.move", "token_id": tokenID, "x": 40, "y": 50, "intent_id": "i3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("token.move: %v", err)
+	}
+	moved, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.moved" || !ok || moved["x"] != float64(40) {
+		t.Fatalf("ответ движения: %+v", reply)
 	}
 }

@@ -62,6 +62,17 @@ type SceneSummary struct {
 	Active bool   `json:"active"`
 }
 
+// Token — фишка на сцене. Координаты — в пикселях картинки.
+type Token struct {
+	ID      string  `json:"id"`
+	SceneID string  `json:"scene_id"`
+	Name    string  `json:"name"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Color   string  `json:"color"`
+	OwnerID string  `json:"owner_id,omitempty"`
+}
+
 // Content — кампании, картинки и сцены. Отдельный интерфейс, чтобы вход и сессии
 // можно было проверять без базы, а контент подключать по мере готовности.
 type Content interface {
@@ -72,6 +83,10 @@ type Content interface {
 	Scene(campaignID, sceneID string) (Scene, bool)
 	Scenes(campaignID string) []SceneSummary
 	ImageBytes(campaignID, imageID string) ([]byte, string, bool)
+	Tokens(campaignID, sceneID string) []Token
+	Token(campaignID, sceneID, tokenID string) (Token, bool)
+	CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (Token, bool)
+	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.

@@ -70,7 +70,21 @@ struct SessionFile {
 enum ChatEvent {
     Connected,
     Message(String),
+    Tokens(Vec<Token>),
+    TokenPlaced(Token),
+    TokenMoved(Token),
     Error(String),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Token {
+    id: String,
+    scene_id: String,
+    name: String,
+    x: f64,
+    y: f64,
+    #[serde(default)]
+    color: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +135,9 @@ struct App {
     chat_input: String,
     chat_lines: Vec<String>,
     chat_status: String,
+    tokens: Vec<Token>,
+    token_name: String,
+    drag_token: Option<String>,
     #[allow(dead_code)]
     install_dir: Option<PathBuf>,
 }
@@ -156,6 +173,9 @@ impl App {
             chat_input: String::new(),
             chat_lines: Vec::new(),
             chat_status: String::new(),
+            tokens: Vec::new(),
+            token_name: "Фишка".to_string(),
+            drag_token: None,
             install_dir,
         };
         app.resume_session();
@@ -227,6 +247,8 @@ impl App {
         self.chat_rx = None;
         self.chat_lines.clear();
         self.chat_status.clear();
+        self.tokens.clear();
+        self.drag_token = None;
         self.screen = Screen::Login;
         self.notice = "вы вышли".to_string();
     }
@@ -324,9 +346,10 @@ impl App {
                 self.pending_image = Some(data);
                 self.zoom = 0.0;
                 self.offset = egui::Vec2::ZERO;
+                let scene_id = scene.id.clone();
                 self.scene = Some(scene);
                 self.screen = Screen::Scene;
-                self.connect_table(&campaign.id);
+                self.connect_table(&campaign.id, &scene_id);
             }
             Err(error) => self.error = error,
         }
@@ -501,6 +524,47 @@ impl App {
         let size = egui::vec2(image_w * self.zoom, image_h * self.zoom);
         let origin = rect.center() - size / 2.0 + self.offset;
         let map_rect = egui::Rect::from_min_size(origin, size);
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        if response.drag_started() {
+            if let Some(position) = pointer {
+                self.drag_token = self
+                    .tokens
+                    .iter()
+                    .find(|token| {
+                        let center = egui::pos2(
+                            origin.x + token.x as f32 * self.zoom,
+                            origin.y + token.y as f32 * self.zoom,
+                        );
+                        center.distance(position) <= 16.0
+                    })
+                    .map(|token| token.id.clone());
+            }
+        }
+        if self.drag_token.is_some() {
+            if response.dragged() {
+                if let Some(position) = pointer {
+                    let x = ((position.x - origin.x) / self.zoom).clamp(0.0, image_w) as f64;
+                    let y = ((position.y - origin.y) / self.zoom).clamp(0.0, image_h) as f64;
+                    if let Some(token) = self
+                        .tokens
+                        .iter_mut()
+                        .find(|token| Some(&token.id) == self.drag_token.as_ref())
+                    {
+                        token.x = x;
+                        token.y = y;
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                if let Some(id) = self.drag_token.take() {
+                    if let Some(token) = self.tokens.iter().find(|token| token.id == id) {
+                        self.move_token(&id, token.x, token.y);
+                    }
+                }
+            }
+        } else if response.dragged() {
+            self.offset += response.drag_delta();
+        }
         painter.image(
             texture.id(),
             map_rect,
@@ -584,7 +648,39 @@ impl App {
                 }
             }
         }
+        for token in &self.tokens {
+            let center = to_screen(token.x as f32, token.y as f32);
+            let fill = token_color(&token.color);
+            let radius = 13.0;
+            painter.circle_filled(center, radius, fill);
+            painter.circle_stroke(
+                center,
+                radius,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(30, 30, 30)),
+            );
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                &token.name,
+                egui::FontId::proportional(12.0),
+                egui::Color32::BLACK,
+            );
+        }
     }
+}
+
+fn token_color(value: &str) -> egui::Color32 {
+    let text = value.trim().trim_start_matches('#');
+    if text.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&text[0..2], 16),
+            u8::from_str_radix(&text[2..4], 16),
+            u8::from_str_radix(&text[4..6], 16),
+        ) {
+            return egui::Color32::from_rgb(r, g, b);
+        }
+    }
+    egui::Color32::from_rgb(232, 197, 71)
 }
 
 fn multipart_body(image: &[u8], annotation: &[u8], name: &str) -> (Vec<u8>, String) {
@@ -672,7 +768,7 @@ impl App {
             Err(error) => self.error = error,
         }
     }
-    fn ws_url(&self, campaign_id: &str) -> String {
+    fn ws_url(&self, campaign_id: &str, scene_id: &str) -> String {
         let base = if let Some(rest) = self.base_url.strip_prefix("https://") {
             format!("wss://{rest}")
         } else if let Some(rest) = self.base_url.strip_prefix("http://") {
@@ -681,16 +777,18 @@ impl App {
             self.base_url.clone()
         };
         format!(
-            "{}/v1/campaigns/{campaign_id}/table",
+            "{}/v1/campaigns/{campaign_id}/table?scene_id={scene_id}",
             base.trim_end_matches('/')
         )
     }
 
-    fn connect_table(&mut self, campaign_id: &str) {
+    fn connect_table(&mut self, campaign_id: &str, scene_id: &str) {
         self.chat_rx = None;
         self.chat_lines.clear();
+        self.tokens.clear();
+        self.drag_token = None;
         self.chat_status = "подключение…".to_string();
-        let (token, url) = match (&self.token, self.ws_url(campaign_id)) {
+        let (token, url) = match (&self.token, self.ws_url(campaign_id, scene_id)) {
             (Some(token), url) => (token.clone(), url),
             _ => return,
         };
@@ -723,10 +821,35 @@ impl App {
                             Err(_) => continue,
                         };
                         match value["type"].as_str() {
+                            Some("hello") => {
+                                if let Some(items) = value["state"]["tokens"].as_array() {
+                                    let tokens: Vec<Token> = items
+                                        .iter()
+                                        .filter_map(|item| {
+                                            serde_json::from_value(item.clone()).ok()
+                                        })
+                                        .collect();
+                                    let _ = sender.send(ChatEvent::Tokens(tokens));
+                                }
+                            }
                             Some("chat.said") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
                                 let body = value["text"].as_str().unwrap_or("");
                                 let _ = sender.send(ChatEvent::Message(format!("{actor}: {body}")));
+                            }
+                            Some("token.placed") => {
+                                if let Ok(token) =
+                                    serde_json::from_value::<Token>(value["token"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::TokenPlaced(token));
+                                }
+                            }
+                            Some("token.moved") => {
+                                if let Ok(token) =
+                                    serde_json::from_value::<Token>(value["token"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::TokenMoved(token));
+                                }
                             }
                             Some("error") => {
                                 let message =
@@ -759,16 +882,38 @@ impl App {
             match event {
                 ChatEvent::Connected => self.chat_status = "на связи".to_string(),
                 ChatEvent::Message(line) => self.chat_lines.push(line),
+                ChatEvent::Tokens(list) => {
+                    let scene_id = self.current_scene_id();
+                    self.tokens = list
+                        .into_iter()
+                        .filter(|token| token.scene_id == scene_id)
+                        .collect();
+                }
+                ChatEvent::TokenPlaced(token) => {
+                    if token.scene_id == self.current_scene_id()
+                        && !self.tokens.iter().any(|item| item.id == token.id)
+                    {
+                        self.tokens.push(token);
+                    }
+                }
+                ChatEvent::TokenMoved(token) => {
+                    if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
+                        *item = token;
+                    }
+                }
                 ChatEvent::Error(error) => self.chat_status = format!("ошибка: {error}"),
             }
         }
     }
 
-    fn chat_send(&mut self) {
-        let text = self.chat_input.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
+    fn current_scene_id(&self) -> String {
+        self.scene
+            .as_ref()
+            .map(|scene| scene.id.clone())
+            .unwrap_or_default()
+    }
+
+    fn send_intent(&self, payload: Value) {
         let campaign = match &self.campaign {
             Some(campaign) => campaign.clone(),
             None => return,
@@ -777,8 +922,7 @@ impl App {
             Some(token) => token.clone(),
             None => return,
         };
-        let url = self.ws_url(&campaign.id);
-        self.chat_input.clear();
+        let url = self.ws_url(&campaign.id, &self.current_scene_id());
         thread::spawn(move || {
             let mut request = match url.as_str().into_client_request() {
                 Ok(request) => request,
@@ -790,15 +934,51 @@ impl App {
             let (mut socket, _) = match tungstenite::connect(request) {
                 Ok(pair) => pair,
                 Err(error) => {
-                    eprintln!("chat: {error}");
+                    eprintln!("стол: {error}");
                     return;
                 }
             };
             let _ = socket.read();
-            let payload = serde_json::json!({"type": "chat.say", "text": text});
             let _ = socket.send(tungstenite::Message::text(payload.to_string()));
+            let _ = socket.read();
             let _ = socket.close(None);
         });
+    }
+
+    fn chat_send(&mut self) {
+        let text = self.chat_input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.chat_input.clear();
+        self.send_intent(serde_json::json!({"type": "chat.say", "text": text}));
+    }
+
+    fn place_token(&mut self) {
+        let scene = match &self.scene {
+            Some(scene) => scene.clone(),
+            None => return,
+        };
+        let name = self.token_name.trim().to_string();
+        let (x, y) = (
+            scene.image.width as f64 / 2.0,
+            scene.image.height as f64 / 2.0,
+        );
+        self.send_intent(serde_json::json!({
+            "type": "token.place",
+            "name": if name.is_empty() { "Фишка" } else { name.as_str() },
+            "x": x,
+            "y": y,
+        }));
+    }
+
+    fn move_token(&self, token_id: &str, x: f64, y: f64) {
+        self.send_intent(serde_json::json!({
+            "type": "token.move",
+            "token_id": token_id,
+            "x": x,
+            "y": y,
+        }));
     }
 
     fn show_chat(&mut self, ui: &mut egui::Ui) {
@@ -822,6 +1002,17 @@ impl App {
                 self.chat_send();
             }
         });
+        if let Some(campaign) = &self.campaign {
+            if campaign.role == "owner" || campaign.role == "master" {
+                ui.separator();
+                ui.heading("Фишки");
+                ui.text_edit_singleline(&mut self.token_name);
+                if ui.button("+ в центр сцены").clicked() {
+                    self.place_token();
+                }
+                ui.label("перетащите фишку по карте");
+            }
+        }
     }
 }
 
@@ -923,6 +1114,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_color_parses_hex() {
+        let color = token_color("#e8c547");
+        assert_eq!(color, egui::Color32::from_rgb(232, 197, 71));
+        assert_eq!(token_color("nope"), egui::Color32::from_rgb(232, 197, 71));
+    }
 
     #[test]
     fn multipart_has_both_files_and_name() {

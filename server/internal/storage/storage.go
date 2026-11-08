@@ -405,7 +405,76 @@ func (d *DB) Scene(campaignID, sceneID string) (api.Scene, bool) {
 		WHERE s.campaign_id = ? AND s.id = ?`, campaignID, sceneID)
 }
 
-// Scenes — список сцен кампании без геометрии.
+// Tokens — фишки сцены в порядке появления.
+func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
+	rows, err := d.db.Query(`SELECT id, scene_id, name, x, y, color, COALESCE(owner_id, '')
+		FROM tokens WHERE campaign_id = ? AND scene_id = ? ORDER BY created_at, id`,
+		campaignID, sceneID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]api.Token, 0, 8)
+	for rows.Next() {
+		var token api.Token
+		if err := rows.Scan(&token.ID, &token.SceneID, &token.Name,
+			&token.X, &token.Y, &token.Color, &token.OwnerID); err != nil {
+			return nil
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+// Token — одна фишка сцены.
+func (d *DB) Token(campaignID, sceneID, tokenID string) (api.Token, bool) {
+	var token api.Token
+	err := d.db.QueryRow(`SELECT id, scene_id, name, x, y, color, COALESCE(owner_id, '')
+		FROM tokens WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		campaignID, sceneID, tokenID).
+		Scan(&token.ID, &token.SceneID, &token.Name, &token.X, &token.Y,
+			&token.Color, &token.OwnerID)
+	if err != nil {
+		return api.Token{}, false
+	}
+	return token, true
+}
+
+// CreateToken ставит фишку на сцену кампании.
+func (d *DB) CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (api.Token, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Фишка"
+	}
+	var exists int
+	if err := d.db.QueryRow("SELECT 1 FROM scenes WHERE campaign_id = ? AND id = ?",
+		campaignID, sceneID).Scan(&exists); err != nil {
+		return api.Token{}, false
+	}
+	id, err := newID("t")
+	if err != nil {
+		return api.Token{}, false
+	}
+	if _, err := d.db.Exec(`INSERT INTO tokens
+		(id, campaign_id, scene_id, owner_id, name, x, y, color, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '#e8c547', ?)`,
+		id, campaignID, sceneID, ownerID, name, x, y,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, id)
+}
+
+// MoveToken двигает фишку; вызывающий уже проверил права.
+func (d *DB) MoveToken(campaignID, sceneID, tokenID string, x, y float64) (api.Token, bool) {
+	if _, err := d.db.Exec(`UPDATE tokens SET x = ?, y = ?
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		x, y, campaignID, sceneID, tokenID); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, tokenID)
+}
+
 func (d *DB) Scenes(campaignID string) []api.SceneSummary {
 	rows, err := d.db.Query(`SELECT s.id, s.name, s.active,
 		i.id, i.sha256, i.width, i.height, i.mime
