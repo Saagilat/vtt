@@ -843,6 +843,13 @@ impl App {
             }
             Err(error) => self.error = error,
         }
+        if campaign.role != "owner" && campaign.role != "master" {
+            if let Some(active) = self.scenes.iter().find(|scene| scene.active).cloned() {
+                self.open_scene(active);
+            } else {
+                self.notice = "мастер ещё не показал сцену".to_string();
+            }
+        }
     }
 
     fn refresh_campaign_detail(&mut self) {
@@ -1894,12 +1901,25 @@ impl App {
                 .color(WARM_TEXT),
         );
         if self.scenes.is_empty() {
-            ui.label("сцен нет — откройте «Импорт карты» ниже");
+            ui.label(if self.is_master() {
+                "сцен нет — откройте «Импорт карты» ниже"
+            } else {
+                "мастер ещё не показал сцену"
+            });
+        } else if !self.is_master() {
+            ui.label(
+                egui::RichText::new("сцену показывает мастер")
+                    .size(14.0)
+                    .color(WARM_MUTED),
+            );
         }
         let items = self.scenes.clone();
         for scene in items {
+            if !self.is_master() && !scene.active {
+                continue;
+            }
             let subtitle = if scene.active {
-                "● активна — открыть стол"
+                "● показана мастером — открыть"
             } else {
                 "открыть стол"
             };

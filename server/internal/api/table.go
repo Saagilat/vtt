@@ -48,8 +48,8 @@ func (h *tableHub) room(id string) *tableRoom {
 }
 
 var tableUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
+	ReadBufferSize:  65536,
+	WriteBufferSize: 65536,
 	CheckOrigin:     func(*http.Request) bool { return true },
 }
 
@@ -347,25 +347,21 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested := r.URL.Query().Get("scene_id")
-	if requested == "" {
-		for _, scene := range s.content.Scenes(campaign.ID) {
-			if scene.Active {
-				requested = scene.ID
-				break
-			}
-		}
-	}
+	active := s.activeSceneID(campaign.ID)
 	room := s.hub.room(campaign.ID)
 	room.mu.Lock()
-	if room.sceneID == "" {
-		room.sceneID = requested
+	if !master(campaign.Role) {
+		// Игрок всегда смотрит активную сцену, которую показал мастер.
+		room.sceneID = active
+	} else if room.sceneID == "" {
+		room.sceneID = active
 	}
 	sceneID := room.sceneID
 	room.mu.Unlock()
 	if sceneID != "" {
 		if _, ok := s.content.Scene(campaign.ID, sceneID); !ok {
 			sceneID = ""
-			if _, ok := s.content.Scene(campaign.ID, requested); ok {
+			if _, ok := s.content.Scene(campaign.ID, requested); ok && master(campaign.Role) {
 				sceneID = requested
 			}
 			room.mu.Lock()
@@ -411,8 +407,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token_id": turnToken,
 				"round":    turnRound,
 			},
-			"visibility": visibility,
-			"chat":       s.chatHistory(campaign.ID, account.ID, campaign.Role),
+			"chat": s.chatHistory(campaign.ID, account.ID, campaign.Role),
 		},
 		"actions": actions,
 	}
@@ -425,6 +420,14 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 		delete(room.clients, conn)
 		room.mu.Unlock()
 		return
+	}
+	if visibility != nil {
+		_ = conn.WriteJSON(map[string]any{
+			"type": "visibility",
+			"seq":  room.nextSeq(),
+			"time": s.now().UTC().Format(time.RFC3339),
+			"mask": visibility,
+		})
 	}
 	defer func() {
 		room.mu.Lock()

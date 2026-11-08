@@ -432,6 +432,15 @@ func (s *server) importScene(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, scene)
 }
 
+func (s *server) activeSceneID(campaignID string) string {
+	for _, scene := range s.content.Scenes(campaignID) {
+		if scene.Active {
+			return scene.ID
+		}
+	}
+	return ""
+}
+
 func (s *server) listScenes(w http.ResponseWriter, r *http.Request) {
 	account, _, ok := s.whoami(w, r)
 	if !ok {
@@ -443,6 +452,22 @@ func (s *server) listScenes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scenes := s.content.Scenes(campaign.ID)
+	if !master(campaign.Role) {
+		active := ""
+		for _, scene := range scenes {
+			if scene.Active {
+				active = scene.ID
+				break
+			}
+		}
+		scenes = nil
+		for _, scene := range s.content.Scenes(campaign.ID) {
+			if scene.ID == active {
+				scenes = []SceneSummary{scene}
+				break
+			}
+		}
+	}
 	if scenes == nil {
 		scenes = []SceneSummary{}
 	}
@@ -483,6 +508,10 @@ func (s *server) getScene(w http.ResponseWriter, r *http.Request) {
 	scene, ok := s.content.Scene(campaign.ID, r.PathValue("sid"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", "сцены нет")
+		return
+	}
+	if !master(campaign.Role) && scene.ID != s.activeSceneID(campaign.ID) {
+		writeError(w, http.StatusNotFound, "not_found", "сцену показывает мастер")
 		return
 	}
 	if !master(campaign.Role) {

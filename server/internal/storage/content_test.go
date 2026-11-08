@@ -595,6 +595,94 @@ func TestTableChat(t *testing.T) {
 	}
 }
 
+func TestPlayerSceneAccess(t *testing.T) {
+	handler, db, _ := newContentHandler(t)
+	aliceToken := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Сцены"}`))
+	create.Header.Set("Authorization", "Bearer "+aliceToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "scenes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown, err := db.CreateScene(campaign.ID, image.ID, "Показана", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := db.CreateScene(campaign.ID, image.ID, "Секрет", annotationFor(64, 64), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobToken := login(t, handler, "bob", "пароль")
+
+	list := httptest.NewRequest("GET", "/v1/campaigns/"+campaign.ID+"/scenes", nil)
+	list.Header.Set("Authorization", "Bearer "+bobToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, list)
+	var playerScenes struct {
+		Items []api.SceneSummary `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &playerScenes); err != nil {
+		t.Fatal(err)
+	}
+	if len(playerScenes.Items) != 1 || playerScenes.Items[0].ID != shown.ID {
+		t.Fatalf("игроку отдали не только активную сцену: %+v", playerScenes.Items)
+	}
+
+	masterList := httptest.NewRequest("GET", "/v1/campaigns/"+campaign.ID+"/scenes", nil)
+	masterList.Header.Set("Authorization", "Bearer "+aliceToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterList)
+	if !strings.Contains(rec.Body.String(), hidden.ID) {
+		t.Fatalf("мастер не видит все сцены: %s", rec.Body)
+	}
+
+	for _, item := range []struct {
+		id   string
+		code int
+	}{{shown.ID, http.StatusOK}, {hidden.ID, http.StatusNotFound}} {
+		request := httptest.NewRequest("GET",
+			"/v1/campaigns/"+campaign.ID+"/scenes/"+item.id, nil)
+		request.Header.Set("Authorization", "Bearer "+bobToken)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, request)
+		if rec.Code != item.code {
+			t.Fatalf("сцена %s: %d, ждали %d", item.id, rec.Code, item.code)
+		}
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"/v1/campaigns/" + campaign.ID + "/table?scene_id=" + hidden.ID
+	header := http.Header{"Authorization": []string{"Bearer " + bobToken}}
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatalf("websocket: %v", err)
+	}
+	defer conn.Close()
+	var hello map[string]any
+	if err := conn.ReadJSON(&hello); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := hello["state"].(map[string]any)
+	if hello["type"] != "hello" || state["scene_id"] != shown.ID {
+		t.Fatalf("игрок подключился к чужой сцене: %+v", hello)
+	}
+}
+
 func TestCharacters(t *testing.T) {
 	db := openTemp(t)
 	alice, err := db.CreateAccount("alice", "пароль")
