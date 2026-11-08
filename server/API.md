@@ -137,7 +137,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `GET /v1/campaigns/{id}/scenes` | участник | список без скрытых от него сцен |
 | `POST /v1/campaigns/{id}/scenes` | мастер | сцена из картинки библиотеки |
 | `GET /v1/campaigns/{id}/scenes/{sid}` | участник | состояние; геометрия — только мастеру |
-| `PUT /v1/campaigns/{id}/scenes/{sid}/annotation` | мастер | заменить `annotation.json` после проверки контракта |
+| `PUT /v1/campaigns/{id}/scenes/{sid}/annotation` | мастер | заменить `annotation.json` после проверки контракта; `?version=N` защищает от одновременной правки |
 | `PATCH /v1/campaigns/{id}/scenes/{sid}` | мастер | `name`, `light`, `globally_visible`, `active` |
 | `POST /v1/campaigns/{id}/scenes/{sid}/duplicate` | мастер | копия состояния, картинка та же |
 | `DELETE /v1/campaigns/{id}/scenes/{sid}` | мастер | в корзину; `POST …/restore` возвращает |

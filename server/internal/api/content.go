@@ -44,15 +44,16 @@ type Image struct {
 
 // Scene — сцена: картинка и геометрия из annotation.json.
 type Scene struct {
-	ID     string          `json:"id"`
-	Name   string          `json:"name"`
-	Image  Image           `json:"image"`
-	Grid   json.RawMessage `json:"grid"`
-	Walls  json.RawMessage `json:"walls"`
-	Doors  json.RawMessage `json:"doors"`
-	Areas  json.RawMessage `json:"areas"`
-	Light  string          `json:"light"`
-	Active bool            `json:"active"`
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Image   Image           `json:"image"`
+	Grid    json.RawMessage `json:"grid"`
+	Walls   json.RawMessage `json:"walls"`
+	Doors   json.RawMessage `json:"doors"`
+	Areas   json.RawMessage `json:"areas"`
+	Light   string          `json:"light"`
+	Active  bool            `json:"active"`
+	Version int             `json:"version"`
 }
 
 // SceneSummary — сцена в списке, без геометрии.
@@ -108,7 +109,7 @@ type Content interface {
 	AcceptInvite(code, accountID string, now time.Time) (Campaign, error)
 	AddImage(campaignID string, data []byte, mime string, width, height int, sha string) (Image, error)
 	CreateScene(campaignID, imageID, name string, annotation []byte, active bool) (Scene, error)
-	UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte) (Scene, bool)
+	UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte, expectedVersion int) (Scene, bool)
 	Scene(campaignID, sceneID string) (Scene, bool)
 	Scenes(campaignID string) []SceneSummary
 	ImageBytes(campaignID, imageID string) ([]byte, string, bool)
@@ -480,9 +481,15 @@ func (s *server) updateSceneAnnotation(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	updated, ok := s.content.UpdateSceneAnnotation(campaign.ID, scene.ID, data)
+	expectedVersion := 0
+	if raw := r.URL.Query().Get("version"); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+			expectedVersion = value
+		}
+	}
+	updated, ok := s.content.UpdateSceneAnnotation(campaign.ID, scene.ID, data, expectedVersion)
 	if !ok {
-		writeError(w, http.StatusConflict, "conflict", "разметка не сохранилась")
+		writeError(w, http.StatusConflict, "conflict", "сцену уже изменили, перезагрузите и повторите")
 		return
 	}
 	s.broadcastSceneChanged(campaign.ID, updated.ID, account)

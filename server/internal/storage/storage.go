@@ -464,9 +464,16 @@ func (d *DB) CreateScene(campaignID, imageID, name string, annotation []byte, ac
 }
 
 // UpdateSceneAnnotation заменяет разметку сцены; проверку контракта делает API.
-func (d *DB) UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte) (api.Scene, bool) {
-	result, err := d.db.Exec(`UPDATE scenes SET annotation = ?
-		WHERE campaign_id = ? AND id = ?`, string(annotation), campaignID, sceneID)
+// expectedVersion > 0 включает проверку: устаревшая правка не применяется.
+func (d *DB) UpdateSceneAnnotation(campaignID, sceneID string, annotation []byte, expectedVersion int) (api.Scene, bool) {
+	query := `UPDATE scenes SET annotation = ?, version = version + 1
+		WHERE campaign_id = ? AND id = ?`
+	args := []any{string(annotation), campaignID, sceneID}
+	if expectedVersion > 0 {
+		query += " AND version = ?"
+		args = append(args, expectedVersion)
+	}
+	result, err := d.db.Exec(query, args...)
 	if err != nil {
 		return api.Scene{}, false
 	}
@@ -483,7 +490,7 @@ func (d *DB) sceneRow(query string, args ...any) (api.Scene, bool) {
 		annotation string
 	)
 	err := d.db.QueryRow(query, args...).Scan(&scene.ID, &scene.Name, &annotation,
-		&scene.Light, &scene.Active, &scene.Image.ID, &scene.Image.SHA256,
+		&scene.Light, &scene.Active, &scene.Version, &scene.Image.ID, &scene.Image.SHA256,
 		&scene.Image.Width, &scene.Image.Height, &scene.Image.Mime)
 	if err != nil {
 		return api.Scene{}, false
@@ -501,7 +508,7 @@ func (d *DB) sceneRow(query string, args ...any) (api.Scene, bool) {
 
 // Scene — сцена кампании вместе с картинкой и геометрией.
 func (d *DB) Scene(campaignID, sceneID string) (api.Scene, bool) {
-	return d.sceneRow(`SELECT s.id, s.name, s.annotation, s.light, s.active,
+	return d.sceneRow(`SELECT s.id, s.name, s.annotation, s.light, s.active, s.version,
 		i.id, i.sha256, i.width, i.height, i.mime
 		FROM scenes s JOIN images i ON i.id = s.image_id
 		WHERE s.campaign_id = ? AND s.id = ?`, campaignID, sceneID)

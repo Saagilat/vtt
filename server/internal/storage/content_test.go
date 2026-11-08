@@ -538,4 +538,14 @@ func TestUpdateSceneAnnotation(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"w1"`) {
 		t.Fatalf("геометрия не вернулась: %s", rec.Body)
 	}
+
+	stale := httptest.NewRequest("PUT",
+		"/v1/campaigns/"+campaign.ID+"/scenes/"+scene.ID+"/annotation?version=1",
+		bytes.NewReader(annotationFor(64, 64)))
+	stale.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, stale)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("устаревшая правка: %d %s", rec.Code, rec.Body)
+	}
 }

@@ -157,6 +157,8 @@ struct Scene {
     light: String,
     #[allow(dead_code)]
     active: bool,
+    #[serde(default)]
+    version: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1763,8 +1765,8 @@ impl App {
         });
         match self.put_json::<Scene>(
             &format!(
-                "/v1/campaigns/{}/scenes/{}/annotation",
-                campaign.id, scene.id
+                "/v1/campaigns/{}/scenes/{}/annotation?version={}",
+                campaign.id, scene.id, scene.version
             ),
             annotation,
         ) {
