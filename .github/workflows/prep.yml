@@ -1,0 +1,31 @@
+name: prep
+
+# CI по путям (docs/projects.md, правило 4): правка в prep/ запускает только его.
+# Контракт подготовки не касается вовсе: annotation.json она не читает и не пишет.
+on:
+  push:
+    paths:
+      - 'prep/**'
+      - '.github/workflows/prep.yml'
+  pull_request:
+    paths:
+      - 'prep/**'
+      - '.github/workflows/prep.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prep
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Тесты — командная строка, без установки и без зависимостей
+        run: python3 -m unittest discover -s tests -v
+      - name: Манифест и команда из него
+        run: |
+          python3 -m pip install --no-deps .
+          vtt-prep --version
