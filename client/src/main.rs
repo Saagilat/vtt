@@ -171,6 +171,14 @@ fn default_hp() -> i32 {
     10
 }
 
+fn sheet_ability(data: &Value, key: &str) -> i32 {
+    data.get("abilities")
+        .and_then(|abilities| abilities.get(key))
+        .and_then(Value::as_i64)
+        .map(|value| value.clamp(1, 30) as i32)
+        .unwrap_or(10)
+}
+
 fn character_hp(character: &Character) -> (i32, i32) {
     let hp = character
         .data
@@ -285,6 +293,14 @@ struct App {
     sheet_level: i32,
     sheet_hp: i32,
     sheet_hp_max: i32,
+    sheet_str: i32,
+    sheet_dex: i32,
+    sheet_con: i32,
+    sheet_int: i32,
+    sheet_wis: i32,
+    sheet_cha: i32,
+    sheet_inventory: String,
+    sheet_spells: String,
     sheet_notes: String,
     new_character_name: String,
     notes: Vec<Note>,
@@ -377,6 +393,14 @@ impl App {
             sheet_level: 1,
             sheet_hp: 10,
             sheet_hp_max: 10,
+            sheet_str: 10,
+            sheet_dex: 10,
+            sheet_con: 10,
+            sheet_int: 10,
+            sheet_wis: 10,
+            sheet_cha: 10,
+            sheet_inventory: String::new(),
+            sheet_spells: String::new(),
             sheet_notes: String::new(),
             new_character_name: String::new(),
             notes: Vec::new(),
@@ -778,6 +802,24 @@ impl App {
             .get("max_hp")
             .and_then(Value::as_i64)
             .unwrap_or(10) as i32;
+        self.sheet_str = sheet_ability(&character.data, "str");
+        self.sheet_dex = sheet_ability(&character.data, "dex");
+        self.sheet_con = sheet_ability(&character.data, "con");
+        self.sheet_int = sheet_ability(&character.data, "int");
+        self.sheet_wis = sheet_ability(&character.data, "wis");
+        self.sheet_cha = sheet_ability(&character.data, "cha");
+        self.sheet_inventory = character
+            .data
+            .get("inventory")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.sheet_spells = character
+            .data
+            .get("spells")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         self.sheet_notes = character
             .data
             .get("notes")
@@ -792,6 +834,16 @@ impl App {
             "level": self.sheet_level.max(1),
             "hp": self.sheet_hp.max(0),
             "max_hp": self.sheet_hp_max.max(0),
+            "abilities": {
+                "str": self.sheet_str.clamp(1, 30),
+                "dex": self.sheet_dex.clamp(1, 30),
+                "con": self.sheet_con.clamp(1, 30),
+                "int": self.sheet_int.clamp(1, 30),
+                "wis": self.sheet_wis.clamp(1, 30),
+                "cha": self.sheet_cha.clamp(1, 30),
+            },
+            "inventory": self.sheet_inventory.trim(),
+            "spells": self.sheet_spells.trim(),
             "notes": self.sheet_notes.trim(),
         })
     }
@@ -3088,6 +3140,42 @@ impl App {
                     ui.label("/");
                     ui.add(egui::DragValue::new(&mut self.sheet_hp_max).range(0..=9999));
                 });
+                egui::CollapsingHeader::new("Характеристики")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("СИЛ");
+                            ui.add(egui::DragValue::new(&mut self.sheet_str).range(1..=30));
+                            ui.label("ЛОВ");
+                            ui.add(egui::DragValue::new(&mut self.sheet_dex).range(1..=30));
+                            ui.label("ТЕЛ");
+                            ui.add(egui::DragValue::new(&mut self.sheet_con).range(1..=30));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("ИНТ");
+                            ui.add(egui::DragValue::new(&mut self.sheet_int).range(1..=30));
+                            ui.label("МДР");
+                            ui.add(egui::DragValue::new(&mut self.sheet_wis).range(1..=30));
+                            ui.label("ХАР");
+                            ui.add(egui::DragValue::new(&mut self.sheet_cha).range(1..=30));
+                        });
+                    });
+                egui::CollapsingHeader::new("Инвентарь").show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.sheet_inventory)
+                            .hint_text("что несёт персонаж")
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                egui::CollapsingHeader::new("Заклинания").show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.sheet_spells)
+                            .hint_text("известные и подготовленные")
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
                 ui.label("Заметки");
                 ui.add(
                     egui::TextEdit::multiline(&mut self.sheet_notes)
@@ -3146,14 +3234,13 @@ impl App {
                 });
             ui.separator();
             if self.selected_note.is_some() {
-                let editable = self.is_master()
-                    || self.notes.iter().any(|note| {
-                        self.selected_note.as_deref() == Some(note.id.as_str())
-                            && self
-                                .account
-                                .as_ref()
-                                .is_some_and(|account| account.id == note.author_id)
-                    });
+                let editable = self.notes.iter().any(|note| {
+                    self.selected_note.as_deref() == Some(note.id.as_str())
+                        && self
+                            .account
+                            .as_ref()
+                            .is_some_and(|account| account.id == note.author_id)
+                });
                 if editable {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.note_title)
@@ -3513,6 +3600,28 @@ mod tests {
         assert_eq!(token.hp_max, 10);
         assert_eq!(token.initiative, 0);
         assert!(token.owner_login.is_empty());
+    }
+
+    #[test]
+    fn sheet_ability_reads_data_and_defaults() {
+        let data = serde_json::json!({
+            "abilities": {"str": 16, "dex": 8, "con": 40},
+            "hp": 4,
+            "max_hp": 12
+        });
+        assert_eq!(sheet_ability(&data, "str"), 16);
+        assert_eq!(sheet_ability(&data, "dex"), 8);
+        assert_eq!(sheet_ability(&data, "con"), 30);
+        assert_eq!(sheet_ability(&data, "wis"), 10);
+        let character = Character {
+            id: "h1".to_string(),
+            owner_id: String::new(),
+            owner_login: String::new(),
+            name: "Мира".to_string(),
+            approved: false,
+            data,
+        };
+        assert_eq!(character_hp(&character), (4, 12));
     }
 
     #[test]

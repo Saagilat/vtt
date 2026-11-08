@@ -785,7 +785,7 @@ func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "заметки нет")
 		return
 	}
-	if !master(campaign.Role) && note.AuthorID != account.ID {
+	if note.AuthorID != account.ID {
 		writeError(w, http.StatusForbidden, "forbidden", "чужая заметка")
 		return
 	}
@@ -825,7 +825,7 @@ func (s *server) deleteNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "заметки нет")
 		return
 	}
-	if !master(campaign.Role) && note.AuthorID != account.ID {
+	if note.AuthorID != account.ID {
 		writeError(w, http.StatusForbidden, "forbidden", "чужая заметка")
 		return
 	}

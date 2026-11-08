@@ -720,6 +720,36 @@ func TestNotesREST(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("игрок не должен править чужую заметку: %d %s", rec.Code, rec.Body)
 	}
+
+	bobNoteRequest := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/notes",
+		strings.NewReader(`{"title":"Заметка Боба","body":"только моё"}`))
+	bobNoteRequest.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, bobNoteRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("заметка Боба: %d %s", rec.Code, rec.Body)
+	}
+	var bobNote api.Note
+	if err := json.Unmarshal(rec.Body.Bytes(), &bobNote); err != nil {
+		t.Fatal(err)
+	}
+	masterPatch := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/notes/"+bobNote.ID,
+		strings.NewReader(`{"title":"Правка мастера","body":""}`))
+	masterPatch.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterPatch)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("мастер не должен править чужую заметку: %d %s", rec.Code, rec.Body)
+	}
+	masterDelete := httptest.NewRequest("DELETE",
+		"/v1/campaigns/"+campaign.ID+"/notes/"+bobNote.ID, nil)
+	masterDelete.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, masterDelete)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("мастер не должен удалять чужую заметку: %d %s", rec.Code, rec.Body)
+	}
 }
 
 func TestInviteJoinByCode(t *testing.T) {
