@@ -795,6 +795,119 @@ func TestNotesREST(t *testing.T) {
 	}
 }
 
+func TestMemberRoles(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	if !db.SetMemberRole(campaign.ID, bob.ID, api.RoleMaster) {
+		t.Fatal("роль не изменилась")
+	}
+	if detail, ok := db.Campaign(bob.ID, campaign.ID); !ok || detail.Role != api.RoleMaster {
+		t.Fatalf("новая роль: %+v", detail)
+	}
+	if db.SetMemberRole(campaign.ID, alice.ID, api.RolePlayer) {
+		t.Fatal("владельца понизили")
+	}
+	if !db.RemoveMember(campaign.ID, bob.ID) {
+		t.Fatal("участник не убран")
+	}
+	if _, ok := db.Campaign(bob.ID, campaign.ID); ok {
+		t.Fatal("убранный остался в кампании")
+	}
+	if db.RemoveMember(campaign.ID, alice.ID) {
+		t.Fatal("владельца убрали")
+	}
+}
+
+func TestMemberRolesREST(t *testing.T) {
+	handler, db, account := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Вечер"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bobAccount.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, handler, "bob", "пароль")
+
+	roleRequest := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/members/"+bobAccount.ID,
+		strings.NewReader(`{"role":"master"}`))
+	roleRequest.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, roleRequest)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("назначение мастера: %d %s", rec.Code, rec.Body)
+	}
+	if detail, ok := db.Campaign(bobAccount.ID, campaign.ID); !ok || detail.Role != api.RoleMaster {
+		t.Fatalf("роль в базе: %+v", detail)
+	}
+
+	foreign := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/members/"+bobAccount.ID,
+		strings.NewReader(`{"role":"player"}`))
+	foreign.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, foreign)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("мастер не должен менять роли: %d %s", rec.Code, rec.Body)
+	}
+
+	put := httptest.NewRequest("PUT",
+		"/v1/campaigns/"+campaign.ID+"/members/"+bobAccount.ID,
+		strings.NewReader(`{"role":"player"}`))
+	put.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, put)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT роли: %d %s", rec.Code, rec.Body)
+	}
+
+	self := httptest.NewRequest("PATCH",
+		"/v1/campaigns/"+campaign.ID+"/members/"+account.ID,
+		strings.NewReader(`{"role":"player"}`))
+	self.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, self)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("владелец не должен менять свою роль: %d %s", rec.Code, rec.Body)
+	}
+
+	remove := httptest.NewRequest("DELETE",
+		"/v1/campaigns/"+campaign.ID+"/members/"+bobAccount.ID, nil)
+	remove.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, remove)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("удаление участника: %d %s", rec.Code, rec.Body)
+	}
+	if _, ok := db.Campaign(bobAccount.ID, campaign.ID); ok {
+		t.Fatal("участник остался")
+	}
+}
+
 func TestInviteJoinByCode(t *testing.T) {
 	handler, db, account := newContentHandler(t)
 	alice := login(t, handler, "alice", "пароль")

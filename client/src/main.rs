@@ -157,6 +157,7 @@ enum ChatEvent {
     CharacterChanged(Character),
     NoteChanged(Note),
     NoteRemoved(String),
+    MembersChanged,
     SceneShown(
         SceneSummary,
         Vec<Token>,
@@ -701,6 +702,64 @@ impl App {
                     }
                     Err(error) => self.error = error.to_string(),
                 }
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn refresh_campaign_detail(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
+            Ok(detail) => {
+                if let Some(current) = &mut self.campaign {
+                    current.role = detail.role.clone();
+                }
+                self.campaign_detail = Some(detail);
+            }
+            Err(error) => {
+                self.error = error;
+                self.campaign = None;
+                self.campaign_detail = None;
+                self.scenes.clear();
+                self.scene = None;
+                self.screen = Screen::Campaigns;
+                let _ = self.load_campaigns();
+            }
+        }
+    }
+
+    fn change_member_role(&mut self, account_id: &str, role: &str) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.patch_json::<Value>(
+            &format!("/v1/campaigns/{}/members/{}", campaign.id, account_id),
+            serde_json::json!({"role": role}),
+        ) {
+            Ok(_) => {
+                self.notice = format!("роль изменена: {}", role_name(role));
+                self.refresh_campaign_detail();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn remove_member(&mut self, account_id: &str) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.delete_request(&format!(
+            "/v1/campaigns/{}/members/{}",
+            campaign.id, account_id
+        )) {
+            Ok(()) => {
+                self.notice = "участник убран из кампании".to_string();
+                self.refresh_campaign_detail();
             }
             Err(error) => self.error = error,
         }
@@ -1428,7 +1487,19 @@ impl App {
                 }
             }
         }
-        if let Some(detail) = &self.campaign_detail {
+        let members = self
+            .campaign_detail
+            .as_ref()
+            .map(|detail| detail.members.clone())
+            .unwrap_or_default();
+        let is_owner = self
+            .campaign
+            .as_ref()
+            .map(|campaign| campaign.role == "owner")
+            .unwrap_or(false);
+        if !members.is_empty() {
+            let mut role_change = None;
+            let mut remove = None;
             warm_frame(WARM_PANEL).show(ui, |ui| {
                 ui.set_width(width);
                 ui.label(
@@ -1437,10 +1508,40 @@ impl App {
                         .strong()
                         .color(WARM_TEXT),
                 );
-                for member in &detail.members {
-                    ui.label(format!("{}  ·  {}", member.login, role_name(&member.role)));
+                for member in &members {
+                    ui.horizontal(|ui| {
+                        ui.label(&member.login);
+                        if is_owner && member.role != "owner" {
+                            let mut role = member.role.clone();
+                            egui::ComboBox::from_id_salt(format!("member-role-{}", member.id))
+                                .selected_text(role_name(&member.role))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut role, "master".to_string(), "мастер");
+                                    ui.selectable_value(&mut role, "player".to_string(), "игрок");
+                                    ui.selectable_value(
+                                        &mut role,
+                                        "observer".to_string(),
+                                        "наблюдатель",
+                                    );
+                                });
+                            if role != member.role {
+                                role_change = Some((member.id.clone(), role));
+                            }
+                            if ui.small_button("убрать").clicked() {
+                                remove = Some(member.id.clone());
+                            }
+                        } else {
+                            ui.weak(role_name(&member.role));
+                        }
+                    });
                 }
             });
+            if let Some((id, role)) = role_change {
+                self.change_member_role(&id, &role);
+            }
+            if let Some(id) = remove {
+                self.remove_member(&id);
+            }
         }
         ui.add_space(10.0);
         ui.label(
@@ -2568,6 +2669,9 @@ impl App {
                                         sender.send(ChatEvent::NoteRemoved(note_id.to_string()));
                                 }
                             }
+                            Some("members.changed") => {
+                                let _ = sender.send(ChatEvent::MembersChanged);
+                            }
                             Some("roll") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
                                 let formula = value["formula"].as_str().unwrap_or("?");
@@ -2712,6 +2816,7 @@ impl App {
                     }
                     self.load_notes();
                 }
+                ChatEvent::MembersChanged => self.refresh_campaign_detail(),
                 ChatEvent::Roll(line) => self.chat_lines.push(line),
                 ChatEvent::Turn(token_id, round) => {
                     self.turn_token = token_id;

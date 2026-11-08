@@ -118,6 +118,34 @@ func (r *tableRoom) snapshot() []tableClientConn {
 	return out
 }
 
+// setAccountRole обновляет роль в уже подключённых клиентах стола.
+func (r *tableRoom) setAccountRole(accountID, role string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for conn, who := range r.clients {
+		if who.account.ID == accountID {
+			who.role = role
+			r.clients[conn] = who
+		}
+	}
+}
+
+// closeAccount отключает все соединения участника, которого убрали из кампании.
+func (r *tableRoom) closeAccount(accountID string) {
+	var conns []*websocket.Conn
+	r.mu.Lock()
+	for conn, who := range r.clients {
+		if who.account.ID == accountID {
+			conns = append(conns, conn)
+			delete(r.clients, conn)
+		}
+	}
+	r.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
 // chatHistory оставляет только то, что человек вправе видеть.
 func (s *server) chatHistory(campaignID, accountID, role string) []ChatMessage {
 	all := s.content.ChatMessages(campaignID, 50)
@@ -182,6 +210,19 @@ func (s *server) broadcastNoteRemoved(campaignID, noteID string, actor Account) 
 		"time":    s.now().UTC().Format(time.RFC3339),
 		"note_id": noteID,
 		"actor":   actor,
+	})
+}
+
+func (s *server) broadcastMembersChanged(campaignID, accountID, role string, removed bool, actor Account) {
+	room := s.hub.room(campaignID)
+	room.broadcast(map[string]any{
+		"type":       "members.changed",
+		"seq":        room.nextSeq(),
+		"time":       s.now().UTC().Format(time.RFC3339),
+		"account_id": accountID,
+		"role":       role,
+		"removed":    removed,
+		"actor":      actor,
 	})
 }
 

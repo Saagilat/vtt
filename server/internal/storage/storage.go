@@ -227,6 +227,33 @@ func (d *DB) AddMember(accountID, campaignID, role string) error {
 	return nil
 }
 
+// SetMemberRole меняет роль участника. Владельца не переназначаем.
+func (d *DB) SetMemberRole(campaignID, accountID, role string) bool {
+	if !validRole(role) || role == api.RoleOwner {
+		return false
+	}
+	result, err := d.db.Exec(`UPDATE memberships SET role = ?
+		WHERE campaign_id = ? AND account_id = ? AND role != ?`,
+		role, campaignID, accountID, api.RoleOwner)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
+}
+
+// RemoveMember убирает участника; владельца кампании удалить нельзя.
+func (d *DB) RemoveMember(campaignID, accountID string) bool {
+	result, err := d.db.Exec(`DELETE FROM memberships
+		WHERE campaign_id = ? AND account_id = ? AND role != ?`,
+		campaignID, accountID, api.RoleOwner)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
+}
+
 func validRole(role string) bool {
 	switch role {
 	case api.RoleOwner, api.RoleMaster, api.RolePlayer, api.RoleObserver:
