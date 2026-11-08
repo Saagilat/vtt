@@ -50,12 +50,31 @@ def no_root_manifests(bad: list[str]) -> None:
             bad.append("в корне лежит манифест %s: он должен быть у проекта" % name)
 
 
+# Локальные каталоги, которых нет в git (тестовые карты, результаты стендов), не проекты:
+# их имена перечислены в .gitignore с косой чертой на конце.
+def ignored_top_level() -> set[str]:
+    gitignore = ROOT / ".gitignore"
+    names: set[str] = set()
+    if not gitignore.exists():
+        return names
+    for line in gitignore.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or not line.endswith("/"):
+            continue
+        name = line.rstrip("/")
+        if name and "/" not in name:
+            names.add(name)
+    return names
+
+
 def folder_list(bad: list[str], expected: list[str]) -> None:
     """Папки проектов и таблица в документе не должны расходиться."""
+    ignored = ignored_top_level()
     actual = {
         p.name
         for p in ROOT.iterdir()
         if p.is_dir() and not p.name.startswith(".") and p.name != SHARED
+        and p.name not in ignored
     }
     for name in sorted(set(expected) - actual):
         bad.append("docs/projects.md называет папку %s/, а её нет" % name)
