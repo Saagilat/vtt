@@ -108,7 +108,13 @@ enum ChatEvent {
     TokenPlaced(Token),
     TokenMoved(Token),
     TokenUpdated(Token),
-    SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
+    SceneShown(
+        SceneSummary,
+        Vec<Token>,
+        HashMap<String, bool>,
+        Option<String>,
+        u32,
+    ),
     SceneChanged(String),
     Doors(HashMap<String, bool>),
     DoorSet(String, bool),
@@ -1923,8 +1929,15 @@ impl App {
                                                 .collect()
                                         })
                                         .unwrap_or_default();
-                                    let _ =
-                                        sender.send(ChatEvent::SceneShown(scene, tokens, doors));
+                                    let turn_id = value["turn"]["token_id"]
+                                        .as_str()
+                                        .filter(|id| !id.is_empty())
+                                        .map(str::to_string);
+                                    let turn_round =
+                                        value["turn"]["round"].as_u64().unwrap_or(0) as u32;
+                                    let _ = sender.send(ChatEvent::SceneShown(
+                                        scene, tokens, doors, turn_id, turn_round,
+                                    ));
                                 }
                             }
                             Some("scene.changed") => {
@@ -2058,11 +2071,11 @@ impl App {
                     self.turn_token = token_id;
                     self.round = round;
                 }
-                ChatEvent::SceneShown(scene, tokens, doors) => {
+                ChatEvent::SceneShown(scene, tokens, doors, turn_id, turn_round) => {
                     if self.load_scene(&scene, Some(tokens)) {
                         self.doors = doors;
-                        self.turn_token = None;
-                        self.round = 0;
+                        self.turn_token = turn_id;
+                        self.round = turn_round;
                         for item in &mut self.scenes {
                             item.active = item.id == scene.id;
                         }

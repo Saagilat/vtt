@@ -126,8 +126,8 @@ type Content interface {
 	SaveExploredMask(campaignID, sceneID, accountID string, data []byte) bool
 	SetActiveScene(campaignID, sceneID string) bool
 	SetSceneLight(campaignID, sceneID, light string) bool
-	Turn(campaignID string) (tokenID string, round int)
-	SetTurn(campaignID, tokenID string, round int) bool
+	Turn(campaignID, sceneID string) (tokenID string, round int)
+	SetTurn(campaignID, sceneID, tokenID string, round int) bool
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.

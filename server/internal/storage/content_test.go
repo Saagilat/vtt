@@ -507,6 +507,42 @@ func TestExploredMaskStored(t *testing.T) {
 	}
 }
 
+func TestSceneTurnsIndependent(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Бой")
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.CreateScene(campaign.ID, image.ID, "Первая", annotationFor(64, 64), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateScene(campaign.ID, image.ID, "Вторая", annotationFor(64, 64), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !db.SetTurn(campaign.ID, first.ID, "t1", 2) {
+		t.Fatal("ход первой сцены не сохранился")
+	}
+	if !db.SetTurn(campaign.ID, second.ID, "t2", 1) {
+		t.Fatal("ход второй сцены не сохранился")
+	}
+	if token, round := db.Turn(campaign.ID, first.ID); token != "t1" || round != 2 {
+		t.Fatalf("первая сцена: %q, %d", token, round)
+	}
+	if token, round := db.Turn(campaign.ID, second.ID); token != "t2" || round != 1 {
+		t.Fatalf("вторая сцена: %q, %d", token, round)
+	}
+}
+
 func TestUpdateSceneAnnotation(t *testing.T) {
 	handler, db, _ := newContentHandler(t)
 	alice := login(t, handler, "alice", "пароль")

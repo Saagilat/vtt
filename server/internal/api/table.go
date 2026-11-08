@@ -276,7 +276,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	if master(campaign.Role) {
 		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light")
 	}
-	turnToken, turnRound := s.content.Turn(campaign.ID)
+	turnToken, turnRound := s.content.Turn(campaign.ID, sceneID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -488,7 +488,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			s.content.SetActiveScene(campaign.ID, shown.ID)
-			s.content.SetTurn(campaign.ID, "", 0)
+			turnToken, turnRound := s.content.Turn(campaign.ID, shown.ID)
 			room.setScene(shown.ID)
 			room.broadcast(map[string]any{
 				"type":   "scene.shown",
@@ -497,7 +497,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"scene":  shown,
 				"tokens": s.content.Tokens(campaign.ID, shown.ID),
 				"doors":  s.content.Doors(campaign.ID, shown.ID),
-				"turn":   map[string]any{"token_id": "", "round": 0},
+				"turn":   map[string]any{"token_id": turnToken, "round": turnRound},
 				"actor":  account,
 			})
 			s.sendVisibility(room, campaign.ID, shown.ID)
@@ -559,7 +559,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			sort.SliceStable(tokens, func(i, j int) bool {
 				return tokens[i].Initiative > tokens[j].Initiative
 			})
-			currentID, round := s.content.Turn(campaign.ID)
+			currentID, round := s.content.Turn(campaign.ID, current)
 			if round < 1 {
 				round = 1
 			}
@@ -576,7 +576,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 					round++
 				}
 			}
-			s.content.SetTurn(campaign.ID, tokens[next].ID, round)
+			s.content.SetTurn(campaign.ID, current, tokens[next].ID, round)
 			room.broadcast(map[string]any{
 				"type":     "turn.set",
 				"seq":      room.nextSeq(),

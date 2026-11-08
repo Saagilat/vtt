@@ -612,27 +612,28 @@ func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
 	return tx.Commit() == nil
 }
 
-// Turn — чей ход в кампании и какой круг. Пустая фишка значит «бой не начат».
-func (d *DB) Turn(campaignID string) (string, int) {
+// Turn — чей ход на конкретной сцене и какой круг. Пустая фишка значит «бой не начат».
+func (d *DB) Turn(campaignID, sceneID string) (string, int) {
 	var tokenID string
 	var round int
-	err := d.db.QueryRow("SELECT token_id, round FROM table_turns WHERE campaign_id = ?",
-		campaignID).Scan(&tokenID, &round)
+	err := d.db.QueryRow(`SELECT token_id, round FROM scene_turns
+		WHERE campaign_id = ? AND scene_id = ?`, campaignID, sceneID).
+		Scan(&tokenID, &round)
 	if err != nil {
 		return "", 0
 	}
 	return tokenID, round
 }
 
-// SetTurn сохраняет текущий ход. Пустая фишка и круг 0 — бой не начат.
-func (d *DB) SetTurn(campaignID, tokenID string, round int) bool {
+// SetTurn сохраняет текущий ход сцены. Пустая фишка и круг 0 — бой не начат.
+func (d *DB) SetTurn(campaignID, sceneID, tokenID string, round int) bool {
 	if round < 0 {
 		round = 0
 	}
-	_, err := d.db.Exec(`INSERT INTO table_turns (campaign_id, token_id, round)
-		VALUES (?, ?, ?)
-		ON CONFLICT(campaign_id) DO UPDATE SET token_id = excluded.token_id, round = excluded.round`,
-		campaignID, tokenID, round)
+	_, err := d.db.Exec(`INSERT INTO scene_turns (campaign_id, scene_id, token_id, round)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(scene_id) DO UPDATE SET token_id = excluded.token_id, round = excluded.round`,
+		campaignID, sceneID, tokenID, round)
 	return err == nil
 }
 
