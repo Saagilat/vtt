@@ -51,6 +51,29 @@ func TestVisibilityWallBlocksView(t *testing.T) {
 	}
 }
 
+func TestMaskFromBitsKeepsExplored(t *testing.T) {
+	size := visibilityBlocks * visibilityBlocks / 8
+	visible := make([]byte, size)
+	visible[0] = 1 // блок 0
+	explored := make([]byte, size)
+	explored[0] = 2 // блок 1 был виден раньше
+	mask := maskFromBits(visible, explored)
+	_ = testMask(t, mask)
+	seenExplored, err := base64.StdEncoding.DecodeString(mask.Explored)
+	if err != nil {
+		t.Fatalf("explored base64: %v", err)
+	}
+	if !maskBit(seenExplored, 0, 0) || !maskBit(seenExplored, 1, 0) {
+		t.Fatal("текущая или накопленная видимость потерялась")
+	}
+	if seenExplored[0] != 3 {
+		t.Fatalf("объединение масок: %08b", seenExplored[0])
+	}
+	if mask.Explored == "" {
+		t.Fatal("нет explored в ответе")
+	}
+}
+
 func TestVisibilityNeedsOwnToken(t *testing.T) {
 	scene := Scene{
 		Image: Image{Width: 100, Height: 100},

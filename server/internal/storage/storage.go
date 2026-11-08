@@ -531,6 +531,29 @@ func (d *DB) SetDoor(campaignID, sceneID, doorID string, open bool) bool {
 	return err == nil
 }
 
+// ExploredMask — накопленная видимость игрока на сцене.
+func (d *DB) ExploredMask(campaignID, sceneID, accountID string) []byte {
+	var data []byte
+	err := d.db.QueryRow(`SELECT data FROM explored_masks
+		WHERE campaign_id = ? AND scene_id = ? AND account_id = ?`,
+		campaignID, sceneID, accountID).Scan(&data)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// SaveExploredMask сохраняет накопленную маску; повторная запись заменяет её.
+func (d *DB) SaveExploredMask(campaignID, sceneID, accountID string, data []byte) bool {
+	_, err := d.db.Exec(`INSERT INTO explored_masks
+		(campaign_id, scene_id, account_id, data, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(campaign_id, scene_id, account_id)
+		DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+		campaignID, sceneID, accountID, data, time.Now().UTC().Format(time.RFC3339))
+	return err == nil
+}
+
 func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
 	tx, err := d.db.Begin()
 	if err != nil {

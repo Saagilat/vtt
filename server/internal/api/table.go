@@ -112,6 +112,25 @@ func (r *tableRoom) snapshot() []tableClientConn {
 	return out
 }
 
+func (s *server) accountVisibility(campaignID, sceneID, accountID string) (VisibilityMask, bool) {
+	scene, ok := s.content.Scene(campaignID, sceneID)
+	if !ok {
+		return VisibilityMask{}, false
+	}
+	tokens := s.content.Tokens(campaignID, sceneID)
+	doors := s.content.Doors(campaignID, sceneID)
+	visible := visibleBits(scene, doors, tokens, accountID)
+	explored := s.content.ExploredMask(campaignID, sceneID, accountID)
+	if len(explored) != len(visible) {
+		explored = make([]byte, len(visible))
+	}
+	for i := range explored {
+		explored[i] |= visible[i]
+	}
+	s.content.SaveExploredMask(campaignID, sceneID, accountID, explored)
+	return maskFromBits(visible, explored), true
+}
+
 // sendVisibility пересчитывает маску каждому игроку отдельно: у него своя фишка
 // и свой туман. Мастеру маска не нужна — он видит геометрию целиком.
 func (s *server) sendVisibility(room *tableRoom, campaignID, sceneID string) {
@@ -128,12 +147,20 @@ func (s *server) sendVisibility(room *tableRoom, campaignID, sceneID string) {
 		if master(client.who.role) {
 			continue
 		}
-		mask := visibilityFor(scene, doors, tokens, client.who.account.ID)
+		visible := visibleBits(scene, doors, tokens, client.who.account.ID)
+		explored := s.content.ExploredMask(campaignID, sceneID, client.who.account.ID)
+		if len(explored) != len(visible) {
+			explored = make([]byte, len(visible))
+		}
+		for i := range explored {
+			explored[i] |= visible[i]
+		}
+		s.content.SaveExploredMask(campaignID, sceneID, client.who.account.ID, explored)
 		_ = room.send(client.conn, map[string]any{
 			"type": "visibility",
 			"seq":  room.nextSeq(),
 			"time": s.now().UTC().Format(time.RFC3339),
-			"mask": mask,
+			"mask": maskFromBits(visible, explored),
 		})
 	}
 }
@@ -216,8 +243,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	doors := s.content.Doors(campaign.ID, sceneID)
 	var visibility any
 	if !master(campaign.Role) && sceneID != "" {
-		if scene, ok := s.content.Scene(campaign.ID, sceneID); ok {
-			mask := visibilityFor(scene, doors, tokens, account.ID)
+		if mask, ok := s.accountVisibility(campaign.ID, sceneID, account.ID); ok {
 			visibility = mask
 		}
 	}

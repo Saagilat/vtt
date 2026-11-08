@@ -9,10 +9,11 @@ import (
 // visibilityBlocks — сторона маски из server/API.md: 256×256 блоков на карту.
 const visibilityBlocks = 256
 
-// VisibilityMask — растровая маска видимости. Бит 1 — блок виден, 0 — туман.
+// VisibilityMask — растровые маски видимости. Бит 1 — блок виден, 0 — туман.
 type VisibilityMask struct {
-	Blocks  int    `json:"blocks"`
-	Visible string `json:"visible"`
+	Blocks   int    `json:"blocks"`
+	Visible  string `json:"visible"`
+	Explored string `json:"explored,omitempty"`
 }
 
 type visPoint struct {
@@ -26,10 +27,14 @@ type visSegment struct {
 // visibilityFor считает видимость для одного аккаунта: объединение лучей
 // от всех его фишек. Геометрия остаётся на сервере, клиент получает только маску.
 func visibilityFor(scene Scene, doors map[string]bool, tokens []Token, accountID string) VisibilityMask {
+	return maskFromBits(visibleBits(scene, doors, tokens, accountID), nil)
+}
+
+func visibleBits(scene Scene, doors map[string]bool, tokens []Token, accountID string) []byte {
 	width := float64(scene.Image.Width)
 	height := float64(scene.Image.Height)
 	if width <= 0 || height <= 0 {
-		return emptyVisibility()
+		return make([]byte, visibilityBlocks*visibilityBlocks/8)
 	}
 	walls := sceneSegments(scene.Walls)
 	openDoors := make([]visSegment, 0, 2)
@@ -47,7 +52,7 @@ func visibilityFor(scene Scene, doors map[string]bool, tokens []Token, accountID
 	}
 	mask := make([]byte, visibilityBlocks*visibilityBlocks/8)
 	if len(origins) == 0 {
-		return VisibilityMask{Blocks: visibilityBlocks, Visible: base64.StdEncoding.EncodeToString(mask)}
+		return mask
 	}
 
 	blockW := width / visibilityBlocks
@@ -66,12 +71,30 @@ func visibilityFor(scene Scene, doors map[string]bool, tokens []Token, accountID
 			}
 		}
 	}
-	return VisibilityMask{Blocks: visibilityBlocks, Visible: base64.StdEncoding.EncodeToString(mask)}
+	return mask
+}
+
+// maskFromBits собирает ответ и объединяет текущую видимость с накопленной.
+func maskFromBits(visible, explored []byte) VisibilityMask {
+	size := visibilityBlocks * visibilityBlocks / 8
+	if len(visible) != size {
+		visible = make([]byte, size)
+	}
+	if len(explored) != size {
+		explored = make([]byte, size)
+	}
+	for i := range explored {
+		explored[i] |= visible[i]
+	}
+	return VisibilityMask{
+		Blocks:   visibilityBlocks,
+		Visible:  base64.StdEncoding.EncodeToString(visible),
+		Explored: base64.StdEncoding.EncodeToString(explored),
+	}
 }
 
 func emptyVisibility() VisibilityMask {
-	mask := make([]byte, visibilityBlocks*visibilityBlocks/8)
-	return VisibilityMask{Blocks: visibilityBlocks, Visible: base64.StdEncoding.EncodeToString(mask)}
+	return maskFromBits(make([]byte, visibilityBlocks*visibilityBlocks/8), nil)
 }
 
 type doorSeg struct {

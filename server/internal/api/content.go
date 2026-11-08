@@ -118,6 +118,8 @@ type Content interface {
 	SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (Token, bool)
 	Doors(campaignID, sceneID string) map[string]bool
 	SetDoor(campaignID, sceneID, doorID string, open bool) bool
+	ExploredMask(campaignID, sceneID, accountID string) []byte
+	SaveExploredMask(campaignID, sceneID, accountID string, data []byte) bool
 	SetActiveScene(campaignID, sceneID string) bool
 	Turn(campaignID string) (tokenID string, round int)
 	SetTurn(campaignID, tokenID string, round int) bool

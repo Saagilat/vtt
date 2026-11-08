@@ -97,6 +97,8 @@ struct SessionFile {
 struct VisibilityMask {
     blocks: u32,
     visible: String,
+    #[serde(default)]
+    explored: String,
 }
 
 enum ChatEvent {
@@ -623,13 +625,24 @@ impl App {
             self.error = "маска видимости короче карты".to_string();
             return;
         }
+        let explored = if mask.explored.is_empty() {
+            vec![0u8; data.len()]
+        } else {
+            match base64::engine::general_purpose::STANDARD.decode(&mask.explored) {
+                Ok(data) if data.len() * 8 >= blocks * blocks => data,
+                _ => vec![0u8; data.len()],
+            }
+        };
         let mut rgba = image::RgbaImage::new(blocks as u32, blocks as u32);
         for y in 0..blocks {
             for x in 0..blocks {
                 let bit = y * blocks + x;
                 let visible = data[bit / 8] & (1 << (bit % 8)) != 0;
+                let seen = explored[bit / 8] & (1 << (bit % 8)) != 0;
                 let pixel = if visible {
                     image::Rgba([0, 0, 0, 0])
+                } else if seen {
+                    image::Rgba([25, 18, 13, 118])
                 } else {
                     image::Rgba([25, 18, 13, 238])
                 };

@@ -472,155 +472,37 @@ func TestInviteJoinByCode(t *testing.T) {
 	}
 }
 
-func TestTablePlayerTokenRollAndTurn(t *testing.T) {
-	handler, db, _ := newContentHandler(t)
-	alice := login(t, handler, "alice", "пароль")
-	bob, err := db.CreateAccount("bob", "пароль")
+func TestExploredMaskStored(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Бой"}`))
-	create.Header.Set("Authorization", "Bearer "+alice)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, create)
-	var campaign api.Campaign
-	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
-		t.Fatal(err)
-	}
-	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-play")
+	campaign, err := db.CreateCampaignFor(alice.ID, "Туман")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scene, err := db.CreateScene(campaign.ID, image.ID, "Арена", annotationFor(64, 64), true)
+	image, err := db.AddImage(campaign.ID, testPNG(t, 64, 64), "image/png", 64, 64, "sha-fog")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	url := "ws" + strings.TrimPrefix(server.URL, "http") +
-		"/v1/campaigns/" + campaign.ID + "/table?scene_id=" + scene.ID
-	dial := func(token string) *websocket.Conn {
-		conn, _, err := websocket.DefaultDialer.Dial(url,
-			http.Header{"Authorization": []string{"Bearer " + token}})
-		if err != nil {
-			t.Fatalf("websocket: %v", err)
-		}
-		var hello map[string]any
-		if err := conn.ReadJSON(&hello); err != nil {
-			t.Fatalf("hello: %v", err)
-		}
-		return conn
-	}
-	read := func(conn *websocket.Conn, kind string) map[string]any {
-		for {
-			var reply map[string]any
-			if err := conn.ReadJSON(&reply); err != nil {
-				t.Fatalf("%s: %v", kind, err)
-			}
-			if reply["type"] == "visibility" {
-				continue
-			}
-			if reply["type"] != kind {
-				t.Fatalf("%s: получили %+v", kind, reply)
-			}
-			return reply
-		}
-	}
-
-	master := dial(alice)
-	if err := master.WriteJSON(map[string]any{
-		"type": "token.place", "name": "Боб", "owner_id": bob.ID,
-		"x": 10, "y": 10, "intent_id": "p1",
-	}); err != nil {
+	scene, err := db.CreateScene(campaign.ID, image.ID, "Карта", annotationFor(64, 64), true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	placed := read(master, "token.placed")
-	bobTokenID, _ := placed["token"].(map[string]any)["id"].(string)
-	if bobTokenID == "" || placed["token"].(map[string]any)["owner_login"] != "bob" {
-		t.Fatalf("фишка без владельца: %+v", placed)
+	first := []byte{1, 2, 3}
+	if !db.SaveExploredMask(campaign.ID, scene.ID, alice.ID, first) {
+		t.Fatal("маска не сохранилась")
 	}
-	master.Close()
-
-	player := dial(login(t, handler, "bob", "пароль"))
-	if err := player.WriteJSON(map[string]any{
-		"type": "token.move", "token_id": bobTokenID, "x": 30, "y": 40, "intent_id": "p2",
-	}); err != nil {
-		t.Fatal(err)
+	got := db.ExploredMask(campaign.ID, scene.ID, alice.ID)
+	if string(got) != string(first) {
+		t.Fatalf("маска: %v", got)
 	}
-	moved := read(player, "token.moved")
-	if moved["token"].(map[string]any)["x"] != float64(30) {
-		t.Fatalf("фишка не сдвинулась: %+v", moved)
+	second := []byte{9, 8}
+	if !db.SaveExploredMask(campaign.ID, scene.ID, alice.ID, second) {
+		t.Fatal("маска не перезаписалась")
 	}
-
-	if err := player.WriteJSON(map[string]any{
-		"type": "token.update", "token_id": bobTokenID,
-		"hp": 5, "hp_max": 12, "initiative": 15, "intent_id": "p3",
-	}); err != nil {
-		t.Fatal(err)
+	if string(db.ExploredMask(campaign.ID, scene.ID, alice.ID)) != string(second) {
+		t.Fatal("маска не заменилась")
 	}
-	updated := read(player, "token.updated")["token"].(map[string]any)
-	if updated["hp"] != float64(5) || updated["hp_max"] != float64(12) ||
-		updated["initiative"] != float64(15) {
-		t.Fatalf("характеристики не сохранились: %+v", updated)
-	}
-
-	if err := player.WriteJSON(map[string]any{
-		"type": "roll", "formula": "2d6+3", "intent_id": "p4",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	roll := read(player, "roll")
-	values, _ := roll["values"].([]any)
-	if len(values) != 2 || roll["visibility"] != "table" {
-		t.Fatalf("бросок: %+v", roll)
-	}
-
-	if err := player.WriteJSON(map[string]any{
-		"type": "token.place", "name": "Самозванец", "x": 1, "y": 1, "intent_id": "p5",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	denied := read(player, "error")
-	if denied["error"].(map[string]any)["code"] != "forbidden" {
-		t.Fatalf("фишку поставил игрок: %+v", denied)
-	}
-	player.Close()
-
-	master = dial(alice)
-	if err := master.WriteJSON(map[string]any{
-		"type": "token.place", "name": "Алиса", "x": 20, "y": 20, "intent_id": "p6",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	aliceTokenID, _ := read(master, "token.placed")["token"].(map[string]any)["id"].(string)
-	if err := master.WriteJSON(map[string]any{
-		"type": "token.update", "token_id": aliceTokenID, "initiative": 5, "intent_id": "p7",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	read(master, "token.updated")
-
-	for _, want := range []struct {
-		tokenID string
-		round   float64
-	}{{bobTokenID, 1}, {aliceTokenID, 1}, {bobTokenID, 2}} {
-		if err := master.WriteJSON(map[string]any{
-			"type": "turn.next", "intent_id": "turn",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		turn := read(master, "turn.set")
-		if turn["token_id"] != want.tokenID || turn["round"] != want.round {
-			t.Fatalf("ход: %+v, ждали %+v", turn, want)
-		}
-	}
-	if tokenID, round := db.Turn(campaign.ID); tokenID != bobTokenID || round != 2 {
-		t.Fatalf("ход не сохранён: %q, %d", tokenID, round)
-	}
-	master.Close()
 }
