@@ -206,7 +206,9 @@ DELETE /v1/sessions/current → 204, тела нет
 > `visibility` — маску 256×256 из `hello` и после движения фишки, двери или смены сцены;
 > считается объединение лучей от его фишек, закрытые двери и стены перекрывают взгляд.
 > Бит маски — `x + y*256`, младший бит первым; `1` — видно, `0` — туман.
-> Мастеру маска не нужна: он видит геометрию целиком. Вместо `path` у `token.move`
+> Мастеру маска не нужна: он видит геометрию целиком. Для проверки он может
+> прислать `visibility.peek` с `account_id` и получить ту же маску с `as_account` —
+> режим «глазами игрока»; пустой `account_id` выключает режим. Вместо `path` у `token.move`
 > пока передаются `x`, `y` в пикселях картинки. Остальные намерения и события из таблиц
 > ниже — контракт на следующие срезы.
 
@@ -220,6 +222,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `door.set` | `door_id`, `open` | мастер; игрок — дверь рядом |
 | `scene.show` | `scene_id` | мастер |
 | `turn.next` | — | мастер |
+| `visibility.peek` | `account_id` | мастер |
 | `roll` | `formula`, `visibility` (`table`/`self`/`master`) | участник |
 | `chat.say` | `text`, `channel` (`table`/`master`/`whisper`), `to` | участник |
 | `sheet.change` | `character_id`, `changes` | владелец листа, мастер |
@@ -240,7 +243,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `door.set` | `door_id`, `state` |
 | `scene.changed` | `scene_id`, изменённые поля или объект геометрии |
 | `scene.shown` | `scene_id` |
-| `visibility` | `character_id` и обе маски — после движения, двери, света |
+| `visibility` | `mask` (`visible`, `explored`); `as_account` — для режима мастера |
 | `roll` | `formula`, `values`, `total`, `visibility`, кому видно |
 | `chat.said` | `message_id`, `text`, `channel`, `actor` |
 | `sheet.changed` | `character_id`, `changes` |

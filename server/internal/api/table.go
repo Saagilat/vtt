@@ -21,6 +21,7 @@ type tableHub struct {
 type tableClient struct {
 	account Account
 	role    string
+	preview string
 }
 
 type tableRoom struct {
@@ -61,6 +62,7 @@ type tableMessage struct {
 	DoorID     string  `json:"door_id,omitempty"`
 	Name       string  `json:"name,omitempty"`
 	OwnerID    string  `json:"owner_id,omitempty"`
+	AccountID  string  `json:"account_id,omitempty"`
 	Open       bool    `json:"open,omitempty"`
 	X          float64 `json:"x,omitempty"`
 	Y          float64 `json:"y,omitempty"`
@@ -131,37 +133,45 @@ func (s *server) accountVisibility(campaignID, sceneID, accountID string) (Visib
 	return maskFromBits(visible, explored), true
 }
 
+func (r *tableRoom) setPreview(conn *websocket.Conn, accountID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if who, ok := r.clients[conn]; ok {
+		who.preview = accountID
+		r.clients[conn] = who
+	}
+}
+
 // sendVisibility пересчитывает маску каждому игроку отдельно: у него своя фишка
-// и свой туман. Мастеру маска не нужна — он видит геометрию целиком.
+// и свой туман. Мастеру маска не нужна, пока он не смотрит глазами игрока.
 func (s *server) sendVisibility(room *tableRoom, campaignID, sceneID string) {
 	if sceneID == "" {
 		return
 	}
-	scene, ok := s.content.Scene(campaignID, sceneID)
-	if !ok {
-		return
-	}
-	tokens := s.content.Tokens(campaignID, sceneID)
-	doors := s.content.Doors(campaignID, sceneID)
 	for _, client := range room.snapshot() {
+		accountID := client.who.account.ID
 		if master(client.who.role) {
+			if client.who.preview == "" {
+				continue
+			}
+			accountID = client.who.preview
+		}
+		mask, ok := s.accountVisibility(campaignID, sceneID, accountID)
+		if !ok {
 			continue
 		}
-		visible := visibleBits(scene, doors, tokens, client.who.account.ID)
-		explored := s.content.ExploredMask(campaignID, sceneID, client.who.account.ID)
-		if len(explored) != len(visible) {
-			explored = make([]byte, len(visible))
-		}
-		for i := range explored {
-			explored[i] |= visible[i]
-		}
-		s.content.SaveExploredMask(campaignID, sceneID, client.who.account.ID, explored)
-		_ = room.send(client.conn, map[string]any{
+		event := map[string]any{
 			"type": "visibility",
 			"seq":  room.nextSeq(),
 			"time": s.now().UTC().Format(time.RFC3339),
-			"mask": maskFromBits(visible, explored),
-		})
+			"mask": mask,
+		}
+		if master(client.who.role) {
+			if target, ok := s.dir.ByID(accountID); ok {
+				event["as_account"] = target
+			}
+		}
+		_ = room.send(client.conn, event)
 	}
 }
 
@@ -249,7 +259,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move", "token.update", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next")
+		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek")
 	}
 	turnToken, turnRound := s.content.Turn(campaign.ID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
@@ -366,6 +376,48 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			default:
 				room.broadcast(event)
 			}
+		case "visibility.peek":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "смотреть глазами игрока может мастер"},
+				})
+				continue
+			}
+			room.setPreview(conn, message.AccountID)
+			if message.AccountID == "" {
+				continue
+			}
+			target, ok := s.dir.ByID(message.AccountID)
+			if !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "игрока нет"},
+				})
+				continue
+			}
+			if _, ok := s.content.Campaign(message.AccountID, campaign.ID); !ok {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "игрок не в кампании"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			mask, ok := s.accountVisibility(campaign.ID, current, message.AccountID)
+			if !ok {
+				continue
+			}
+			_ = room.send(conn, map[string]any{
+				"type":       "visibility",
+				"seq":        room.nextSeq(),
+				"time":       s.now().UTC().Format(time.RFC3339),
+				"mask":       mask,
+				"as_account": target,
+			})
 		case "scene.show":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{

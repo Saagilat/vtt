@@ -111,7 +111,7 @@ enum ChatEvent {
     SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
     Doors(HashMap<String, bool>),
     DoorSet(String, bool),
-    Visibility(VisibilityMask),
+    Visibility(VisibilityMask, Option<String>),
     Roll(String),
     Turn(Option<String>, u32),
     Error(String),
@@ -205,6 +205,8 @@ struct App {
     token_name: String,
     token_owner: String,
     roll_formula: String,
+    preview_account: String,
+    preview_name: Option<String>,
     visibility: Option<VisibilityMask>,
     pending_visibility: Option<VisibilityMask>,
     fog_texture: Option<egui::TextureHandle>,
@@ -259,6 +261,8 @@ impl App {
             token_name: "Фишка".to_string(),
             token_owner: String::new(),
             roll_formula: "1d20".to_string(),
+            preview_account: String::new(),
+            preview_name: None,
             visibility: None,
             pending_visibility: None,
             fog_texture: None,
@@ -405,6 +409,8 @@ impl App {
         self.pending_image = None;
         self.invite_code.clear();
         self.token_owner.clear();
+        self.preview_account.clear();
+        self.preview_name = None;
         self.panel_tab = PanelTab::Chat;
         self.hint_dismissed = false;
         match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
@@ -1154,7 +1160,7 @@ impl App {
                 egui::Color32::WHITE,
             );
         }
-        if !self.is_master() {
+        if !self.is_master() || self.preview_name.is_some() {
             if let Some(fog) = &self.fog_texture {
                 painter.image(
                     fog.id(),
@@ -1545,6 +1551,8 @@ impl App {
         self.visibility = None;
         self.pending_visibility = None;
         self.fog_texture = None;
+        self.preview_account.clear();
+        self.preview_name = None;
         self.drag_token = None;
         self.chat_status = "подключение…".to_string();
         let (token, url) = match (&self.token, self.ws_url(campaign_id, scene_id)) {
@@ -1610,7 +1618,7 @@ impl App {
                                 if let Ok(mask) = serde_json::from_value::<VisibilityMask>(
                                     value["state"]["visibility"].clone(),
                                 ) {
-                                    let _ = sender.send(ChatEvent::Visibility(mask));
+                                    let _ = sender.send(ChatEvent::Visibility(mask, None));
                                 }
                             }
                             Some("chat.said") => {
@@ -1708,7 +1716,9 @@ impl App {
                                 if let Ok(mask) =
                                     serde_json::from_value::<VisibilityMask>(value["mask"].clone())
                                 {
-                                    let _ = sender.send(ChatEvent::Visibility(mask));
+                                    let as_login =
+                                        value["as_account"]["login"].as_str().map(str::to_string);
+                                    let _ = sender.send(ChatEvent::Visibility(mask, as_login));
                                 }
                             }
                             Some("error") => {
@@ -1782,7 +1792,10 @@ impl App {
                     }
                 }
                 ChatEvent::Doors(doors) => self.doors = doors,
-                ChatEvent::Visibility(mask) => {
+                ChatEvent::Visibility(mask, as_login) => {
+                    if let Some(login) = as_login {
+                        self.preview_name = Some(login);
+                    }
                     self.visibility = Some(mask.clone());
                     self.pending_visibility = Some(mask);
                 }
@@ -1907,6 +1920,29 @@ impl App {
         self.send_intent(serde_json::json!({"type": "turn.next"}));
     }
 
+    fn request_preview(&mut self, account_id: &str, login: &str) {
+        self.preview_account = account_id.to_string();
+        self.preview_name = Some(login.to_string());
+        self.visibility = None;
+        self.fog_texture = None;
+        self.send_intent(serde_json::json!({
+            "type": "visibility.peek",
+            "account_id": account_id,
+        }));
+    }
+
+    fn clear_preview(&mut self) {
+        self.preview_account.clear();
+        self.preview_name = None;
+        self.visibility = None;
+        self.pending_visibility = None;
+        self.fog_texture = None;
+        self.send_intent(serde_json::json!({
+            "type": "visibility.peek",
+            "account_id": "",
+        }));
+    }
+
     fn move_token(&self, token_id: &str, x: f64, y: f64) {
         self.send_intent(serde_json::json!({
             "type": "token.move",
@@ -1999,6 +2035,53 @@ impl App {
         if self.panel_tab == PanelTab::Master {
             if let Some(campaign) = &self.campaign {
                 if campaign.role == "owner" || campaign.role == "master" {
+                    let members = self
+                        .campaign_detail
+                        .as_ref()
+                        .map(|detail| detail.members.clone())
+                        .unwrap_or_default();
+                    ui.separator();
+                    ui.heading("Глазами игрока");
+                    let preview_selected = members
+                        .iter()
+                        .find(|member| member.id == self.preview_account)
+                        .map(|member| member.login.clone())
+                        .unwrap_or_else(|| "выберите игрока".to_string());
+                    egui::ComboBox::from_label("участник")
+                        .selected_text(preview_selected)
+                        .show_ui(ui, |ui| {
+                            for member in &members {
+                                if member.role == "player" || member.role == "observer" {
+                                    ui.selectable_value(
+                                        &mut self.preview_account,
+                                        member.id.clone(),
+                                        format!("{} ({})", member.login, member.role),
+                                    );
+                                }
+                            }
+                        });
+                    if self.preview_name.is_some() {
+                        if accent_button(ui, "Вернуться к мастеру", 240.0).clicked()
+                        {
+                            self.clear_preview();
+                        }
+                        if let Some(name) = &self.preview_name {
+                            ui.label(
+                                egui::RichText::new(format!("смотрим глазами {name}"))
+                                    .strong()
+                                    .color(WARM_ACCENT_HOVER),
+                            );
+                        }
+                    } else if accent_button(ui, "Смотреть глазами", 240.0).clicked()
+                    {
+                        if let Some(member) = members
+                            .iter()
+                            .find(|member| member.id == self.preview_account)
+                        {
+                            let (id, login) = (member.id.clone(), member.login.clone());
+                            self.request_preview(&id, &login);
+                        }
+                    }
                     ui.separator();
                     ui.heading("Фишки");
                     ui.add(
@@ -2006,11 +2089,6 @@ impl App {
                             .hint_text("имя фишки")
                             .desired_width(200.0),
                     );
-                    let members = self
-                        .campaign_detail
-                        .as_ref()
-                        .map(|detail| detail.members.clone())
-                        .unwrap_or_default();
                     let selected = members
                         .iter()
                         .find(|member| member.id == self.token_owner)
@@ -2164,6 +2242,7 @@ impl eframe::App for App {
             .as_ref()
             .map(|campaign| role_name(&campaign.role));
         let connection = self.chat_status.clone();
+        let preview_label = self.preview_name.clone();
         let logged = self.token.is_some();
         let mut logout = false;
         let mut open_settings = false;
@@ -2187,6 +2266,14 @@ impl eframe::App for App {
                     if self.screen == Screen::Scene {
                         ui.separator();
                         ui.weak(&connection);
+                    }
+                    if let Some(name) = &preview_label {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("глазами {name}"))
+                                .strong()
+                                .color(WARM_ACCENT_HOVER),
+                        );
                     }
                     if logged {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
