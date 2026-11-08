@@ -171,12 +171,36 @@ fn default_hp() -> i32 {
     10
 }
 
+fn ability_modifier(score: i32) -> i32 {
+    (score - 10).div_euclid(2)
+}
+
+fn ability_formula(score: i32) -> String {
+    let modifier = ability_modifier(score);
+    if modifier == 0 {
+        "1d20".to_string()
+    } else {
+        format!("1d20{modifier:+}")
+    }
+}
+
 fn sheet_ability(data: &Value, key: &str) -> i32 {
     data.get("abilities")
         .and_then(|abilities| abilities.get(key))
         .and_then(Value::as_i64)
         .map(|value| value.clamp(1, 30) as i32)
         .unwrap_or(10)
+}
+
+fn ability_cell(ui: &mut egui::Ui, label: &str, score: &mut i32) -> bool {
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new(label).size(13.0).color(WARM_MUTED));
+        ui.add(egui::DragValue::new(score).range(1..=30));
+        ui.small_button(format!("d20 {:+}", ability_modifier(*score)))
+            .on_hover_text(format!("бросить проверку {label}"))
+            .clicked()
+    })
+    .inner
 }
 
 fn character_hp(character: &Character) -> (i32, i32) {
@@ -2751,6 +2775,17 @@ impl App {
         }));
     }
 
+    fn roll_ability(&mut self, label: &str, score: i32) {
+        let formula = ability_formula(score);
+        self.roll_formula = formula.clone();
+        self.send_intent(serde_json::json!({
+            "type": "roll",
+            "formula": formula,
+            "visibility": "table",
+        }));
+        self.notice = format!("бросок {label}: {formula}");
+    }
+
     fn next_turn(&mut self) {
         self.send_intent(serde_json::json!({"type": "turn.next"}));
     }
@@ -3143,22 +3178,32 @@ impl App {
                 egui::CollapsingHeader::new("Характеристики")
                     .default_open(true)
                     .show(ui, |ui| {
+                        let mut roll = None;
                         ui.horizontal(|ui| {
-                            ui.label("СИЛ");
-                            ui.add(egui::DragValue::new(&mut self.sheet_str).range(1..=30));
-                            ui.label("ЛОВ");
-                            ui.add(egui::DragValue::new(&mut self.sheet_dex).range(1..=30));
-                            ui.label("ТЕЛ");
-                            ui.add(egui::DragValue::new(&mut self.sheet_con).range(1..=30));
+                            if ability_cell(ui, "СИЛ", &mut self.sheet_str) {
+                                roll = Some(("СИЛ", self.sheet_str));
+                            }
+                            if ability_cell(ui, "ЛОВ", &mut self.sheet_dex) {
+                                roll = Some(("ЛОВ", self.sheet_dex));
+                            }
+                            if ability_cell(ui, "ТЕЛ", &mut self.sheet_con) {
+                                roll = Some(("ТЕЛ", self.sheet_con));
+                            }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("ИНТ");
-                            ui.add(egui::DragValue::new(&mut self.sheet_int).range(1..=30));
-                            ui.label("МДР");
-                            ui.add(egui::DragValue::new(&mut self.sheet_wis).range(1..=30));
-                            ui.label("ХАР");
-                            ui.add(egui::DragValue::new(&mut self.sheet_cha).range(1..=30));
+                            if ability_cell(ui, "ИНТ", &mut self.sheet_int) {
+                                roll = Some(("ИНТ", self.sheet_int));
+                            }
+                            if ability_cell(ui, "МДР", &mut self.sheet_wis) {
+                                roll = Some(("МДР", self.sheet_wis));
+                            }
+                            if ability_cell(ui, "ХАР", &mut self.sheet_cha) {
+                                roll = Some(("ХАР", self.sheet_cha));
+                            }
                         });
+                        if let Some((label, score)) = roll {
+                            self.roll_ability(label, score);
+                        }
                     });
                 egui::CollapsingHeader::new("Инвентарь").show(ui, |ui| {
                     ui.add(
@@ -3600,6 +3645,19 @@ mod tests {
         assert_eq!(token.hp_max, 10);
         assert_eq!(token.initiative, 0);
         assert!(token.owner_login.is_empty());
+    }
+
+    #[test]
+    fn ability_modifiers_match_d20() {
+        assert_eq!(ability_modifier(1), -5);
+        assert_eq!(ability_modifier(8), -1);
+        assert_eq!(ability_modifier(10), 0);
+        assert_eq!(ability_modifier(12), 1);
+        assert_eq!(ability_modifier(16), 3);
+        assert_eq!(ability_modifier(30), 10);
+        assert_eq!(ability_formula(10), "1d20");
+        assert_eq!(ability_formula(16), "1d20+3");
+        assert_eq!(ability_formula(8), "1d20-1");
     }
 
     #[test]
