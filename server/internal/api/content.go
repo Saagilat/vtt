@@ -93,6 +93,16 @@ type Character struct {
 	Data       json.RawMessage `json:"data"`
 }
 
+// Note — запись журнала кампании. Общая для всех участников.
+type Note struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	AuthorID    string `json:"author_id,omitempty"`
+	AuthorLogin string `json:"author_login,omitempty"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 // TokenPatch — изменение характеристик фишки. nil значит «не трогать».
 type TokenPatch struct {
 	HP         *int
@@ -161,6 +171,11 @@ type Content interface {
 	Character(campaignID, characterID string) (Character, bool)
 	CreateCharacter(campaignID, ownerID, name string, data []byte) (Character, bool)
 	UpdateCharacter(campaignID, characterID, name string, data []byte) (Character, bool)
+	Notes(campaignID string) []Note
+	Note(campaignID, noteID string) (Note, bool)
+	CreateNote(campaignID, authorID, title, body string) (Note, bool)
+	UpdateNote(campaignID, noteID, title, body string) (Note, bool)
+	DeleteNote(campaignID, noteID string) bool
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.
@@ -693,4 +708,131 @@ func (s *server) updateCharacter(w http.ResponseWriter, r *http.Request) {
 	s.content.SetCharacterTokensHP(campaign.ID, updated.ID, hp, hpMax)
 	s.broadcastCharacterChanged(campaign.ID, updated, account)
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func noteText(title, body string) (string, string, bool) {
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+	if len(title) > 200 || len(body) > 20000 {
+		return "", "", false
+	}
+	if title == "" {
+		title = "Заметка"
+	}
+	return title, body, true
+}
+
+func (s *server) listNotes(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	items := s.content.Notes(campaign.ID)
+	if items == nil {
+		items = []Note{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next": nil})
+}
+
+func (s *server) createNote(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	var req struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	title, body, ok := noteText(req.Title, req.Body)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "заголовок до 200, текст до 20000 байт")
+		return
+	}
+	note, ok := s.content.CreateNote(campaign.ID, account.ID, title, body)
+	if !ok {
+		writeError(w, http.StatusConflict, "conflict", "заметка не создалась")
+		return
+	}
+	s.broadcastNoteChanged(campaign.ID, note, account)
+	writeJSON(w, http.StatusCreated, note)
+}
+
+func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	note, ok := s.content.Note(campaign.ID, r.PathValue("nid"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "заметки нет")
+		return
+	}
+	if !master(campaign.Role) && note.AuthorID != account.ID {
+		writeError(w, http.StatusForbidden, "forbidden", "чужая заметка")
+		return
+	}
+	var req struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	title, body, ok := noteText(req.Title, req.Body)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "заголовок до 200, текст до 20000 байт")
+		return
+	}
+	updated, ok := s.content.UpdateNote(campaign.ID, note.ID, title, body)
+	if !ok {
+		writeError(w, http.StatusConflict, "conflict", "заметка не сохранилась")
+		return
+	}
+	s.broadcastNoteChanged(campaign.ID, updated, account)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *server) deleteNote(w http.ResponseWriter, r *http.Request) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	note, ok := s.content.Note(campaign.ID, r.PathValue("nid"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "заметки нет")
+		return
+	}
+	if !master(campaign.Role) && note.AuthorID != account.ID {
+		writeError(w, http.StatusForbidden, "forbidden", "чужая заметка")
+		return
+	}
+	if !s.content.DeleteNote(campaign.ID, note.ID) {
+		writeError(w, http.StatusConflict, "conflict", "заметка не удалилась")
+		return
+	}
+	s.broadcastNoteRemoved(campaign.ID, note.ID, account)
+	w.WriteHeader(http.StatusNoContent)
 }

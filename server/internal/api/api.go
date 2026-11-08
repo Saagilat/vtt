@@ -144,6 +144,10 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("POST /v1/campaigns/{id}/characters", s.createCharacter)
 		mux.HandleFunc("GET /v1/campaigns/{id}/characters/{cid}", s.getCharacter)
 		mux.HandleFunc("PATCH /v1/campaigns/{id}/characters/{cid}", s.updateCharacter)
+		mux.HandleFunc("GET /v1/campaigns/{id}/notes", s.listNotes)
+		mux.HandleFunc("POST /v1/campaigns/{id}/notes", s.createNote)
+		mux.HandleFunc("PATCH /v1/campaigns/{id}/notes/{nid}", s.updateNote)
+		mux.HandleFunc("DELETE /v1/campaigns/{id}/notes/{nid}", s.deleteNote)
 		mux.HandleFunc("GET /v1/campaigns/{id}/table", s.table)
 	}
 	mux.HandleFunc("/", s.notFound)

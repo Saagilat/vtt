@@ -92,6 +92,25 @@ struct Character {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct Note {
+    id: String,
+    title: String,
+    body: String,
+    #[serde(default)]
+    author_id: String,
+    #[serde(default)]
+    author_login: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct NoteList {
+    #[serde(default)]
+    items: Vec<Note>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct CharacterList {
     #[serde(default)]
     items: Vec<Character>,
@@ -130,6 +149,8 @@ enum ChatEvent {
     TokenMoved(Token),
     TokenUpdated(Token),
     CharacterChanged(Character),
+    NoteChanged(Note),
+    NoteRemoved(String),
     SceneShown(
         SceneSummary,
         Vec<Token>,
@@ -222,6 +243,7 @@ enum PanelTab {
     Chat,
     Combat,
     Sheet,
+    Journal,
     Master,
 }
 
@@ -265,6 +287,11 @@ struct App {
     sheet_hp_max: i32,
     sheet_notes: String,
     new_character_name: String,
+    notes: Vec<Note>,
+    selected_note: Option<String>,
+    note_title: String,
+    note_body: String,
+    new_note_title: String,
     chat_rx: Option<Receiver<ChatEvent>>,
     chat_input: String,
     chat_channel: String,
@@ -352,6 +379,11 @@ impl App {
             sheet_hp_max: 10,
             sheet_notes: String::new(),
             new_character_name: String::new(),
+            notes: Vec::new(),
+            selected_note: None,
+            note_title: String::new(),
+            note_body: String::new(),
+            new_note_title: String::new(),
             visibility: None,
             pending_visibility: None,
             fog_texture: None,
@@ -435,6 +467,10 @@ impl App {
         self.chat_rx = None;
         self.chat_lines.clear();
         self.chat_status.clear();
+        self.characters.clear();
+        self.selected_character = None;
+        self.notes.clear();
+        self.selected_note = None;
         self.tokens.clear();
         self.drag_token = None;
         self.doors.clear();
@@ -488,6 +524,15 @@ impl App {
             .map_err(format_error)?
             .into_json::<T>()
             .map_err(|error| error.to_string())
+    }
+
+    fn delete_request(&self, path: &str) -> Result<(), String> {
+        let token = self.token.as_deref().unwrap_or("");
+        ureq::delete(&format!("{}{}", self.base_url, path))
+            .set("Authorization", &format!("Bearer {token}"))
+            .call()
+            .map_err(format_error)?;
+        Ok(())
     }
 
     fn login(&mut self) {
@@ -675,6 +720,7 @@ impl App {
         };
         self.screen = Screen::Scene;
         self.load_characters();
+        self.load_notes();
         let scene_id = self.current_scene_id();
         self.connect_table(&campaign.id, &scene_id);
     }
@@ -794,6 +840,108 @@ impl App {
             Ok(character) => {
                 self.notice = format!("лист «{}» сохранён", character.name);
                 self.load_characters();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn load_notes(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.get_json::<NoteList>(&format!("/v1/campaigns/{}/notes", campaign.id)) {
+            Ok(list) => {
+                self.notes = list.items;
+                let selected_exists = self
+                    .selected_note
+                    .as_ref()
+                    .is_some_and(|id| self.notes.iter().any(|note| &note.id == id));
+                if !selected_exists {
+                    let first = self.notes.first().map(|note| note.id.clone());
+                    if let Some(id) = first {
+                        self.select_note(&id);
+                    } else {
+                        self.selected_note = None;
+                        self.note_title.clear();
+                        self.note_body.clear();
+                    }
+                }
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn select_note(&mut self, id: &str) {
+        let note = match self.notes.iter().find(|note| note.id == id) {
+            Some(note) => note.clone(),
+            None => return,
+        };
+        self.selected_note = Some(note.id);
+        self.note_title = note.title;
+        self.note_body = note.body;
+    }
+
+    fn create_note(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let title = if self.new_note_title.trim().is_empty() {
+            "Новая запись"
+        } else {
+            self.new_note_title.trim()
+        };
+        let body = serde_json::json!({"title": title, "body": ""});
+        match self.post_json::<Note>(&format!("/v1/campaigns/{}/notes", campaign.id), body) {
+            Ok(note) => {
+                self.new_note_title.clear();
+                self.load_notes();
+                self.select_note(&note.id);
+                self.notice = format!("запись «{}» создана", note.title);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn save_note(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let id = match &self.selected_note {
+            Some(id) => id.clone(),
+            None => {
+                self.create_note();
+                return;
+            }
+        };
+        let body = serde_json::json!({"title": self.note_title, "body": self.note_body});
+        match self.patch_json::<Note>(&format!("/v1/campaigns/{}/notes/{}", campaign.id, id), body)
+        {
+            Ok(note) => {
+                self.notice = format!("запись «{}» сохранена", note.title);
+                self.load_notes();
+                self.select_note(&note.id);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn delete_note(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let id = match &self.selected_note {
+            Some(id) => id.clone(),
+            None => return,
+        };
+        match self.delete_request(&format!("/v1/campaigns/{}/notes/{}", campaign.id, id)) {
+            Ok(()) => {
+                self.selected_note = None;
+                self.load_notes();
+                self.notice = "запись удалена".to_string();
             }
             Err(error) => self.error = error,
         }
@@ -2212,6 +2360,19 @@ impl App {
                                     let _ = sender.send(ChatEvent::CharacterChanged(character));
                                 }
                             }
+                            Some("note.changed") => {
+                                if let Ok(note) =
+                                    serde_json::from_value::<Note>(value["note"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::NoteChanged(note));
+                                }
+                            }
+                            Some("note.removed") => {
+                                if let Some(note_id) = value["note_id"].as_str() {
+                                    let _ =
+                                        sender.send(ChatEvent::NoteRemoved(note_id.to_string()));
+                                }
+                            }
                             Some("roll") => {
                                 let actor = value["actor"]["login"].as_str().unwrap_or("?");
                                 let formula = value["formula"].as_str().unwrap_or("?");
@@ -2333,6 +2494,26 @@ impl App {
                     if self.selected_character.as_deref() == Some(character.id.as_str()) {
                         self.sheet_hp = hp;
                         self.sheet_hp_max = hp_max;
+                    }
+                }
+                ChatEvent::NoteChanged(note) => {
+                    if let Some(item) = self.notes.iter_mut().find(|item| item.id == note.id) {
+                        *item = note;
+                    } else {
+                        self.notes.push(note);
+                    }
+                    self.notes.sort_by(|a, b| {
+                        b.updated_at
+                            .cmp(&a.updated_at)
+                            .then_with(|| b.id.cmp(&a.id))
+                    });
+                }
+                ChatEvent::NoteRemoved(note_id) => {
+                    self.notes.retain(|note| note.id != note_id);
+                    if self.selected_note.as_deref() == Some(note_id.as_str()) {
+                        self.selected_note = None;
+                        self.note_title.clear();
+                        self.note_body.clear();
                     }
                 }
                 ChatEvent::Roll(line) => self.chat_lines.push(line),
@@ -2587,6 +2768,12 @@ impl App {
                 .clicked()
             {
                 self.panel_tab = PanelTab::Sheet;
+            }
+            if ui
+                .selectable_label(self.panel_tab == PanelTab::Journal, "Журнал")
+                .clicked()
+            {
+                self.panel_tab = PanelTab::Journal;
             }
             if self.is_master()
                 && ui
@@ -2929,6 +3116,86 @@ impl App {
                 );
                 if ui.button("Создать").clicked() {
                     self.create_character();
+                }
+            });
+        }
+        if self.panel_tab == PanelTab::Journal {
+            ui.separator();
+            ui.heading("Журнал кампании");
+            let notes = self.notes.clone();
+            if notes.is_empty() {
+                ui.label(
+                    egui::RichText::new("записей пока нет — начните журнал")
+                        .size(15.0)
+                        .color(WARM_MUTED),
+                );
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    for note in &notes {
+                        let selected = self.selected_note.as_deref() == Some(note.id.as_str());
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(selected, &note.title).clicked() {
+                                self.select_note(&note.id);
+                            }
+                            ui.weak(&note.author_login);
+                        });
+                    }
+                });
+            ui.separator();
+            if self.selected_note.is_some() {
+                let editable = self.is_master()
+                    || self.notes.iter().any(|note| {
+                        self.selected_note.as_deref() == Some(note.id.as_str())
+                            && self
+                                .account
+                                .as_ref()
+                                .is_some_and(|account| account.id == note.author_id)
+                    });
+                if editable {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.note_title)
+                            .hint_text("заголовок")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.note_body)
+                            .hint_text("текст заметки")
+                            .desired_rows(8)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if accent_button(ui, "Сохранить запись", 240.0).clicked() {
+                        self.save_note();
+                    }
+                    if ui.button("Удалить запись").clicked() {
+                        self.delete_note();
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new(&self.note_title)
+                            .size(20.0)
+                            .strong()
+                            .color(WARM_ACCENT),
+                    );
+                    ui.label(
+                        egui::RichText::new(&self.note_body)
+                            .size(16.0)
+                            .color(WARM_TEXT),
+                    );
+                }
+            }
+            ui.separator();
+            ui.label("Новая запись");
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_note_title)
+                        .hint_text("заголовок")
+                        .desired_width(200.0),
+                );
+                if ui.button("Создать").clicked() {
+                    self.create_note();
                 }
             });
         }

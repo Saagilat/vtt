@@ -163,6 +163,28 @@ func (s *server) broadcastCharacterChanged(campaignID string, character Characte
 	})
 }
 
+func (s *server) broadcastNoteChanged(campaignID string, note Note, actor Account) {
+	room := s.hub.room(campaignID)
+	room.broadcast(map[string]any{
+		"type":  "note.changed",
+		"seq":   room.nextSeq(),
+		"time":  s.now().UTC().Format(time.RFC3339),
+		"note":  note,
+		"actor": actor,
+	})
+}
+
+func (s *server) broadcastNoteRemoved(campaignID, noteID string, actor Account) {
+	room := s.hub.room(campaignID)
+	room.broadcast(map[string]any{
+		"type":    "note.removed",
+		"seq":     room.nextSeq(),
+		"time":    s.now().UTC().Format(time.RFC3339),
+		"note_id": noteID,
+		"actor":   actor,
+	})
+}
+
 func (s *server) accountVisibility(campaignID, sceneID, accountID string) (VisibilityMask, bool) {
 	scene, ok := s.content.Scene(campaignID, sceneID)
 	if !ok {

@@ -313,6 +313,38 @@ func TestTableChat(t *testing.T) {
 		t.Fatalf("ответ чата: %+v", reply)
 	}
 
+	noteRequest := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/notes",
+		strings.NewReader(`{"title":"План","body":"Идём в подвал."}`))
+	noteRequest.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, noteRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("заметка: %d %s", rec.Code, rec.Body)
+	}
+	var note api.Note
+	if err := json.Unmarshal(rec.Body.Bytes(), &note); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("note.changed: %v", err)
+	}
+	if reply["type"] != "note.changed" {
+		t.Fatalf("нет события заметки: %+v", reply)
+	}
+	remove := httptest.NewRequest("DELETE", "/v1/campaigns/"+campaign.ID+"/notes/"+note.ID, nil)
+	remove.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, remove)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("удаление заметки: %d %s", rec.Code, rec.Body)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("note.removed: %v", err)
+	}
+	if reply["type"] != "note.removed" {
+		t.Fatalf("нет удаления заметки: %+v", reply)
+	}
+
 	if err := conn.WriteJSON(map[string]any{
 		"type": "token.place", "name": "Герой", "x": 20, "y": 30, "intent_id": "i2",
 	}); err != nil {
@@ -588,6 +620,105 @@ func TestTokenCharacterSync(t *testing.T) {
 	unlinked, ok := db.SetTokenCharacter(campaign.ID, scene.ID, token.ID, "")
 	if !ok || unlinked.CharacterID != "" {
 		t.Fatalf("связь не снялась: %+v", unlinked)
+	}
+}
+
+func TestNotes(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, ok := db.CreateNote(campaign.ID, alice.ID, "Таверна", "Хозяин ждёт нас вечером.")
+	if !ok {
+		t.Fatal("заметка не создалась")
+	}
+	if note.AuthorLogin != "alice" || note.Title != "Таверна" {
+		t.Fatalf("заметка: %+v", note)
+	}
+	updated, ok := db.UpdateNote(campaign.ID, note.ID, "Таверна", "Хозяин ждёт нас утром.")
+	if !ok || updated.Body != "Хозяин ждёт нас утром." {
+		t.Fatalf("правка заметки: %+v", updated)
+	}
+	items := db.Notes(campaign.ID)
+	if len(items) != 1 || items[0].ID != note.ID {
+		t.Fatalf("журнал: %+v", items)
+	}
+	if !db.DeleteNote(campaign.ID, note.ID) {
+		t.Fatal("заметка не удалилась")
+	}
+	if len(db.Notes(campaign.ID)) != 0 {
+		t.Fatal("удалённая заметка осталась")
+	}
+}
+
+func TestNotesREST(t *testing.T) {
+	handler, db, _ := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Вечер"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+
+	noteRequest := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/notes",
+		strings.NewReader(`{"title":"Таверна","body":"Хозяин ждёт вечером."}`))
+	noteRequest.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, noteRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("создание заметки: %d %s", rec.Code, rec.Body)
+	}
+	var note api.Note
+	if err := json.Unmarshal(rec.Body.Bytes(), &note); err != nil {
+		t.Fatal(err)
+	}
+	if note.AuthorLogin != "alice" {
+		t.Fatalf("автор заметки: %+v", note)
+	}
+
+	list := httptest.NewRequest("GET", "/v1/campaigns/"+campaign.ID+"/notes", nil)
+	list.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, list)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Таверна") {
+		t.Fatalf("журнал: %d %s", rec.Code, rec.Body)
+	}
+
+	partial := httptest.NewRequest("PATCH", "/v1/campaigns/"+campaign.ID+"/notes/"+note.ID,
+		strings.NewReader(`{"title":"Таверна","body":""}`))
+	partial.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, partial)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("правка заметки: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"body":""`) {
+		t.Fatalf("пустой текст не сохранился: %s", rec.Body)
+	}
+
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bobAccount.ID, campaign.ID, "player"); err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, handler, "bob", "пароль")
+	foreign := httptest.NewRequest("PATCH", "/v1/campaigns/"+campaign.ID+"/notes/"+note.ID,
+		strings.NewReader(`{"title":"Чужое","body":""}`))
+	foreign.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, foreign)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("игрок не должен править чужую заметку: %d %s", rec.Code, rec.Body)
 	}
 }
 
