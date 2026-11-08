@@ -435,6 +435,29 @@ func TestTableChat(t *testing.T) {
 	if reply["type"] != "token.updated" || !ok || tokenUpdated["initiative"] != total {
 		t.Fatalf("инициатива не записалась: %+v", reply)
 	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "initiative.roll_all", "intent_id": "i2e",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	formulas := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		if err := conn.ReadJSON(&reply); err != nil {
+			t.Fatalf("initiative.roll_all: %v", err)
+		}
+		if reply["type"] != "initiative.rolled" {
+			t.Fatalf("массовая инициатива: %+v", reply)
+		}
+		formula, _ := reply["formula"].(string)
+		formulas[formula] = true
+		rolled, ok := reply["token"].(map[string]any)
+		if !ok || rolled["initiative"] != reply["total"] {
+			t.Fatalf("инициатива в фишке: %+v", reply)
+		}
+	}
+	if !formulas["1d20"] || !formulas["1d20+3"] {
+		t.Fatalf("формулы массовой инициативы: %+v", formulas)
+	}
 
 	if err := conn.WriteJSON(map[string]any{
 		"type": "scene.show", "scene_id": scene2.ID, "intent_id": "i4",

@@ -227,6 +227,18 @@ func (s *server) broadcastMembersChanged(campaignID, accountID, role string, rem
 	})
 }
 
+// tokenInitiativeBonus считает модификатор инициативы из ЛОВ связанного листа.
+func (s *server) tokenInitiativeBonus(campaignID string, token Token) int {
+	if token.CharacterID == "" {
+		return 0
+	}
+	character, ok := s.content.Character(campaignID, token.CharacterID)
+	if !ok {
+		return 0
+	}
+	return (characterAbility(character, "dex") - 10) / 2
+}
+
 func (s *server) accountVisibility(campaignID, sceneID, accountID string) (VisibilityMask, bool) {
 	scene, ok := s.content.Scene(campaignID, sceneID)
 	if !ok {
@@ -372,7 +384,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move", "token.update", "initiative.roll", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light")
+		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light", "initiative.roll_all")
 	}
 	turnToken, turnRound := s.content.Turn(campaign.ID, sceneID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
@@ -564,12 +576,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			bonus := 0
-			if token.CharacterID != "" {
-				if character, ok := s.content.Character(campaign.ID, token.CharacterID); ok {
-					bonus = (characterAbility(character, "dex") - 10) / 2
-				}
-			}
+			bonus := s.tokenInitiativeBonus(campaign.ID, token)
 			result, err := parseRoll(fmt.Sprintf("1d20%+d", bonus))
 			if err != nil {
 				_ = room.send(conn, map[string]any{
@@ -607,6 +614,37 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token": updated,
 				"actor": account,
 			})
+		case "initiative.roll_all":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "инициативу всем бросает мастер"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			for _, token := range s.content.Tokens(campaign.ID, current) {
+				bonus := s.tokenInitiativeBonus(campaign.ID, token)
+				result, err := parseRoll(fmt.Sprintf("1d20%+d", bonus))
+				if err != nil {
+					continue
+				}
+				updated, ok := s.content.SetTokenStats(campaign.ID, current, token.ID,
+					token.HP, token.HPMax, result.Total)
+				if !ok {
+					continue
+				}
+				room.broadcast(map[string]any{
+					"type":    "initiative.rolled",
+					"seq":     room.nextSeq(),
+					"time":    s.now().UTC().Format(time.RFC3339),
+					"token":   updated,
+					"formula": result.Formula,
+					"total":   result.Total,
+					"actor":   account,
+				})
+			}
 		case "visibility.peek":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{

@@ -252,6 +252,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `token.place` | `name`, `owner_id`, `character_id`, `x`, `y` | только мастер: стены не проверяются |
 | `token.update` | `token_id`, `hp`, `hp_max`, `initiative`, `darkvision_ft`, `character_id` | владелец фишки, мастер; `character_id` — только мастер |
 | `initiative.roll` | `token_id` | владелец фишки, мастер: `1d20 + ЛОВ` из листа, результат пишется в инициативу |
+| `initiative.roll_all` | — | только мастер: бросок инициативы для всех фишек текущей сцены |
 | `door.set` | `door_id`, `open` | мастер; игрок — дверь рядом |
 | `scene.show` | `scene_id` | мастер |
 | `turn.next` | — | мастер |
@@ -278,6 +279,7 @@ DELETE /v1/sessions/current → 204, тела нет
 | `scene.shown` | `scene_id` |
 | `visibility` | `mask` (`visible`, `explored`); `as_account` — для режима мастера |
 | `roll` | `formula`, `values`, `total`, `visibility`, кому видно |
+| `initiative.rolled` | `token`, `formula`, `total` — массовый бросок инициативы |
 | `chat.said` | `message_id`, `text`, `channel`, `actor` |
 | `character.changed` | `character` — лист после изменения HP |
 | `note.changed` | `note` — запись журнала создана или изменена |

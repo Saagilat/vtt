@@ -154,6 +154,7 @@ enum ChatEvent {
     TokenPlaced(Token),
     TokenMoved(Token),
     TokenUpdated(Token),
+    InitiativeRolled(Token, String, i64),
     CharacterChanged(Character),
     NoteChanged(Note),
     NoteRemoved(String),
@@ -2718,6 +2719,17 @@ impl App {
                                     let _ = sender.send(ChatEvent::TokenUpdated(token));
                                 }
                             }
+                            Some("initiative.rolled") => {
+                                if let Ok(token) =
+                                    serde_json::from_value::<Token>(value["token"].clone())
+                                {
+                                    let formula =
+                                        value["formula"].as_str().unwrap_or("1d20").to_string();
+                                    let total = value["total"].as_i64().unwrap_or(0);
+                                    let _ = sender
+                                        .send(ChatEvent::InitiativeRolled(token, formula, total));
+                                }
+                            }
                             Some("character.changed") => {
                                 if let Ok(character) =
                                     serde_json::from_value::<Character>(value["character"].clone())
@@ -2840,6 +2852,14 @@ impl App {
                     if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
                         *item = token;
                     }
+                }
+                ChatEvent::InitiativeRolled(token, formula, total) => {
+                    let name = token.name.clone();
+                    if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
+                        *item = token;
+                    }
+                    self.chat_lines
+                        .push(format!("инициатива {name}: {total} ({formula})"));
                 }
                 ChatEvent::CharacterChanged(character) => {
                     let (hp, hp_max) = character_hp(&character);
@@ -3036,6 +3056,10 @@ impl App {
             "type": "initiative.roll",
             "token_id": token_id,
         }));
+    }
+
+    fn roll_all_initiative(&mut self) {
+        self.send_intent(serde_json::json!({"type": "initiative.roll_all"}));
     }
 
     fn link_token(&mut self, token_id: &str, character_id: &str) {
@@ -3866,6 +3890,13 @@ impl App {
                 self.update_token(&id, hp, hp_max, initiative, darkvision);
             }
             if self.is_master() {
+                if ui
+                    .button("Инициатива всем")
+                    .on_hover_text("бросить d20 + ЛОВ для всех фишек сцены")
+                    .clicked()
+                {
+                    self.roll_all_initiative();
+                }
                 let label = if self.round == 0 {
                     "Начать бой"
                 } else {
