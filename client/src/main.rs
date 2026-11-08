@@ -164,6 +164,7 @@ struct App {
     campaigns: Vec<Campaign>,
     campaign: Option<Campaign>,
     campaign_detail: Option<CampaignDetail>,
+    new_campaign: String,
     scenes: Vec<SceneSummary>,
     scene: Option<Scene>,
     texture: Option<egui::TextureHandle>,
@@ -210,6 +211,7 @@ impl App {
             campaigns: Vec::new(),
             campaign: None,
             campaign_detail: None,
+            new_campaign: String::new(),
             scenes: Vec::new(),
             scene: None,
             texture: None,
@@ -394,6 +396,26 @@ impl App {
         }
     }
 
+    fn create_campaign(&mut self) {
+        let name = self.new_campaign.trim().to_string();
+        if name.is_empty() {
+            self.error = "введите название кампании".to_string();
+            return;
+        }
+        match self.post_json::<Campaign>("/v1/campaigns", serde_json::json!({"name": name})) {
+            Ok(campaign) => {
+                self.new_campaign.clear();
+                self.notice = format!("кампания «{}» создана", campaign.name);
+                if let Err(error) = self.load_campaigns() {
+                    self.error = error;
+                    return;
+                }
+                self.open_campaign(campaign);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
     fn create_invite(&mut self) {
         let campaign = match &self.campaign {
             Some(campaign) => campaign.clone(),
@@ -558,26 +580,45 @@ impl App {
     fn show_campaigns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Кампании");
         if self.campaigns.is_empty() {
-            ui.label("кампаний нет или они не загрузились");
+            ui.label("пока пусто — создайте кампанию или войдите по коду");
         }
         let items = self.campaigns.clone();
         for campaign in items {
             if ui
-                .button(format!("{}  ({})", campaign.name, campaign.role))
+                .button(format!(
+                    "{}  ·  {}",
+                    campaign.name,
+                    role_name(&campaign.role)
+                ))
                 .clicked()
             {
                 self.open_campaign(campaign);
             }
         }
         ui.separator();
+        ui.heading("Новая кампания");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_campaign)
+                    .hint_text("название")
+                    .desired_width(260.0),
+            );
+            if ui.button("Создать").clicked() {
+                self.create_campaign();
+            }
+        });
+        ui.separator();
         ui.heading("Войти по коду");
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.join_code);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.join_code)
+                    .hint_text("код от мастера")
+                    .desired_width(180.0),
+            );
             if ui.button("Войти").clicked() {
                 self.accept_invite();
             }
         });
-        ui.label("код выдаёт мастер кампании");
     }
 
     fn show_scenes(&mut self, ui: &mut egui::Ui) {
@@ -603,7 +644,7 @@ impl App {
             ui.separator();
         }
         if self.scenes.is_empty() {
-            ui.label("сцен нет: импортируйте карту через API");
+            ui.label("сцен нет — откройте «Импорт карты» ниже");
         }
         let items = self.scenes.clone();
         for scene in items {
@@ -619,16 +660,23 @@ impl App {
         if let Some(campaign) = &self.campaign {
             if campaign.role == "owner" || campaign.role == "master" {
                 ui.separator();
-                ui.heading("Импорт карты");
-                ui.label("картинка");
-                ui.text_edit_singleline(&mut self.image_path);
-                ui.label("annotation.json");
-                ui.text_edit_singleline(&mut self.annotation_path);
-                ui.label("имя сцены");
-                ui.text_edit_singleline(&mut self.scene_name);
-                if ui.button("Импортировать").clicked() {
-                    self.import_scene();
-                }
+                egui::CollapsingHeader::new("Импорт карты")
+                    .default_open(self.scenes.is_empty())
+                    .show(ui, |ui| {
+                        ui.label("перетащите в окно картинку и annotation.json — или впишите пути");
+                        ui.label(format!("картинка: {}", file_name(&self.image_path)));
+                        ui.text_edit_singleline(&mut self.image_path);
+                        ui.label(format!(
+                            "annotation.json: {}",
+                            file_name(&self.annotation_path)
+                        ));
+                        ui.text_edit_singleline(&mut self.annotation_path);
+                        ui.label("имя сцены");
+                        ui.text_edit_singleline(&mut self.scene_name);
+                        if ui.button("Импортировать").clicked() {
+                            self.import_scene();
+                        }
+                    });
             }
         }
     }
@@ -681,9 +729,6 @@ impl App {
         let image_h = scene.image.height as f32;
         if self.zoom <= 0.0 {
             self.zoom = (rect.width() / image_w).min(rect.height() / image_h) * 0.98;
-        }
-        if response.dragged() {
-            self.offset += response.drag_delta();
         }
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > 0.0 {
@@ -838,14 +883,43 @@ impl App {
                 radius,
                 egui::Stroke::new(2.0, egui::Color32::from_rgb(30, 30, 30)),
             );
+            let label = center + egui::vec2(0.0, radius + 9.0);
             painter.text(
-                center,
+                label + egui::vec2(1.0, 1.0),
                 egui::Align2::CENTER_CENTER,
                 &token.name,
                 egui::FontId::proportional(12.0),
                 egui::Color32::BLACK,
             );
+            painter.text(
+                label,
+                egui::Align2::CENTER_CENTER,
+                &token.name,
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
         }
+    }
+}
+
+fn file_name(path: &str) -> String {
+    if path.trim().is_empty() {
+        return "не выбран".to_string();
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn role_name(role: &str) -> &'static str {
+    match role {
+        "owner" => "владелец",
+        "master" => "мастер",
+        "player" => "игрок",
+        "observer" => "наблюдатель",
+        _ => "участник",
     }
 }
 
@@ -909,6 +983,28 @@ impl App {
             .map_err(format_error)?
             .into_json::<Value>()
             .map_err(|error| error.to_string())
+    }
+
+    fn accept_dropped_files(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|state| state.raw.dropped_files.clone());
+        for file in files {
+            let path = file.path().to_path_buf();
+            let is_json = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+            let text = path.to_string_lossy().to_string();
+            if is_json {
+                self.annotation_path = text;
+            } else {
+                self.image_path = text;
+            }
+        }
+        if !self.image_path.is_empty() || !self.annotation_path.is_empty() {
+            self.notice =
+                "файлы выбраны: проверьте имя сцены и нажмите «Импортировать»".to_string();
+        }
     }
 
     fn import_scene(&mut self) {
@@ -1104,7 +1200,7 @@ impl App {
                                     })
                                     .unwrap_or_default();
                                 let _ = sender.send(ChatEvent::Roll(format!(
-                                    "🎲 {actor}: {formula} = {total}  [{values}]"
+                                    "бросок {actor}: {formula} = {total}  [{values}]"
                                 )));
                             }
                             Some("turn.set") => {
@@ -1339,7 +1435,11 @@ impl App {
             });
         ui.separator();
         ui.horizontal(|ui| {
-            let response = ui.text_edit_singleline(&mut self.chat_input);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.chat_input)
+                    .hint_text("сообщение столу")
+                    .desired_width(220.0),
+            );
             let entered =
                 response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
             if ui.button("Сказать").clicked() || entered {
@@ -1362,7 +1462,11 @@ impl App {
             if campaign.role == "owner" || campaign.role == "master" {
                 ui.separator();
                 ui.heading("Фишки");
-                ui.text_edit_singleline(&mut self.token_name);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.token_name)
+                        .hint_text("имя фишки")
+                        .desired_width(200.0),
+                );
                 let members = self
                     .campaign_detail
                     .as_ref()
@@ -1428,6 +1532,9 @@ impl App {
         } else {
             ui.heading("Бой");
         }
+        if !self.is_master() {
+            ui.label("перетащите свою фишку по карте");
+        }
         let mut ordered = self.tokens.clone();
         ordered.sort_by(|a, b| {
             b.initiative
@@ -1441,9 +1548,17 @@ impl App {
         for token in &ordered {
             let editable = self.can_move_token(token);
             let current = self.turn_token.as_deref() == Some(token.id.as_str());
+            let mine = self
+                .account
+                .as_ref()
+                .map(|account| account.id == token.owner_id)
+                .unwrap_or(false);
             ui.horizontal(|ui| {
                 if current {
                     ui.strong("▶");
+                }
+                if current && mine {
+                    ui.strong("ваш ход");
                 }
                 ui.label(format!(
                     "{}  иниц. {}  HP {}/{}",
@@ -1459,18 +1574,17 @@ impl App {
                 let mut initiative = token.initiative;
                 let mut touched = false;
                 ui.horizontal(|ui| {
+                    ui.label("HP");
                     touched |= ui
                         .add(egui::DragValue::new(&mut hp).range(0..=hp_max))
                         .changed();
+                    ui.label("/");
                     touched |= ui
                         .add(egui::DragValue::new(&mut hp_max).range(1..=9999))
                         .changed();
+                    ui.label("иниц.");
                     touched |= ui
-                        .add(
-                            egui::DragValue::new(&mut initiative)
-                                .range(-100..=1000)
-                                .prefix("иниц. "),
-                        )
+                        .add(egui::DragValue::new(&mut initiative).range(-100..=1000))
                         .changed();
                 });
                 if touched {
@@ -1497,9 +1611,15 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        self.accept_dropped_files(&ctx);
         self.make_texture(&ctx);
         self.poll_chat();
         let account_login = self.account.as_ref().map(|account| account.login.clone());
+        let role_label = self
+            .campaign
+            .as_ref()
+            .map(|campaign| role_name(&campaign.role));
         let base_url = self.base_url.clone();
         let logged = self.token.is_some();
         let mut logout = false;
@@ -1508,7 +1628,10 @@ impl eframe::App for App {
                 ui.heading("VTT");
                 if let Some(login) = &account_login {
                     ui.separator();
-                    ui.label(login);
+                    match role_label {
+                        Some(role) => ui.label(format!("{login} · {role}")),
+                        None => ui.label(login),
+                    };
                 }
                 if !base_url.is_empty() {
                     ui.separator();
