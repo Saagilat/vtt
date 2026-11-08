@@ -73,6 +73,7 @@ enum ChatEvent {
     Tokens(Vec<Token>),
     TokenPlaced(Token),
     TokenMoved(Token),
+    SceneShown(SceneSummary, Vec<Token>),
     Error(String),
 }
 
@@ -326,9 +327,22 @@ impl App {
     }
 
     fn open_scene(&mut self, summary: SceneSummary) {
+        if !self.load_scene(&summary, None) {
+            return;
+        }
         let campaign = match &self.campaign {
             Some(campaign) => campaign.clone(),
             None => return,
+        };
+        self.screen = Screen::Scene;
+        let scene_id = self.current_scene_id();
+        self.connect_table(&campaign.id, &scene_id);
+    }
+
+    fn load_scene(&mut self, summary: &SceneSummary, tokens: Option<Vec<Token>>) -> bool {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return false,
         };
         self.error.clear();
         let scene: Scene = match self.get_json(&format!(
@@ -338,7 +352,7 @@ impl App {
             Ok(scene) => scene,
             Err(error) => {
                 self.error = error;
-                return;
+                return false;
             }
         };
         match self.fetch_image(&campaign.id, &scene.image) {
@@ -346,12 +360,20 @@ impl App {
                 self.pending_image = Some(data);
                 self.zoom = 0.0;
                 self.offset = egui::Vec2::ZERO;
-                let scene_id = scene.id.clone();
                 self.scene = Some(scene);
+                if let Some(tokens) = tokens {
+                    self.tokens = tokens
+                        .into_iter()
+                        .filter(|token| token.scene_id == summary.id)
+                        .collect();
+                }
                 self.screen = Screen::Scene;
-                self.connect_table(&campaign.id, &scene_id);
+                true
             }
-            Err(error) => self.error = error,
+            Err(error) => {
+                self.error = error;
+                false
+            }
         }
     }
 
@@ -482,6 +504,7 @@ impl App {
 
 impl App {
     fn show_scene(&mut self, ui: &mut egui::Ui) {
+        let mut show_all = false;
         ui.horizontal(|ui| {
             if ui.button("← сцены").clicked() {
                 self.screen = Screen::Scenes;
@@ -489,7 +512,21 @@ impl App {
             if let Some(scene) = &self.scene {
                 ui.heading(&scene.name);
             }
+            if let Some(campaign) = &self.campaign {
+                if campaign.role == "owner" || campaign.role == "master" {
+                    if ui.button("Показать всем").clicked() {
+                        show_all = true;
+                    }
+                }
+            }
         });
+        if show_all {
+            let scene_id = self.current_scene_id();
+            self.send_intent(serde_json::json!({
+                "type": "scene.show",
+                "scene_id": scene_id,
+            }));
+        }
         ui.separator();
         self.show_map(ui);
     }
@@ -837,6 +874,24 @@ impl App {
                                 let body = value["text"].as_str().unwrap_or("");
                                 let _ = sender.send(ChatEvent::Message(format!("{actor}: {body}")));
                             }
+                            Some("scene.shown") => {
+                                if let Ok(scene) =
+                                    serde_json::from_value::<SceneSummary>(value["scene"].clone())
+                                {
+                                    let tokens: Vec<Token> = value["tokens"]
+                                        .as_array()
+                                        .map(|items| {
+                                            items
+                                                .iter()
+                                                .filter_map(|item| {
+                                                    serde_json::from_value(item.clone()).ok()
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let _ = sender.send(ChatEvent::SceneShown(scene, tokens));
+                                }
+                            }
                             Some("token.placed") => {
                                 if let Ok(token) =
                                     serde_json::from_value::<Token>(value["token"].clone())
@@ -899,6 +954,13 @@ impl App {
                 ChatEvent::TokenMoved(token) => {
                     if let Some(item) = self.tokens.iter_mut().find(|item| item.id == token.id) {
                         *item = token;
+                    }
+                }
+                ChatEvent::SceneShown(scene, tokens) => {
+                    if self.load_scene(&scene, Some(tokens)) {
+                        for item in &mut self.scenes {
+                            item.active = item.id == scene.id;
+                        }
                     }
                 }
                 ChatEvent::Error(error) => self.chat_status = format!("ошибка: {error}"),

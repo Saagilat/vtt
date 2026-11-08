@@ -87,6 +87,7 @@ type Content interface {
 	Token(campaignID, sceneID, tokenID string) (Token, bool)
 	CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (Token, bool)
 	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
+	SetActiveScene(campaignID, sceneID string) bool
 }
 
 // master — роль, которой можно менять кампанию и импортировать карты.

@@ -405,7 +405,30 @@ func (d *DB) Scene(campaignID, sceneID string) (api.Scene, bool) {
 		WHERE s.campaign_id = ? AND s.id = ?`, campaignID, sceneID)
 }
 
-// Tokens — фишки сцены в порядке появления.
+// SetActiveScene делает сцену активной и снимает флаг с остальных.
+func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return false
+	}
+	var exists int
+	if err := tx.QueryRow("SELECT 1 FROM scenes WHERE campaign_id = ? AND id = ?",
+		campaignID, sceneID).Scan(&exists); err != nil {
+		tx.Rollback()
+		return false
+	}
+	if _, err := tx.Exec("UPDATE scenes SET active = 0 WHERE campaign_id = ?", campaignID); err != nil {
+		tx.Rollback()
+		return false
+	}
+	if _, err := tx.Exec("UPDATE scenes SET active = 1 WHERE campaign_id = ? AND id = ?",
+		campaignID, sceneID); err != nil {
+		tx.Rollback()
+		return false
+	}
+	return tx.Commit() == nil
+}
+
 func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 	rows, err := d.db.Query(`SELECT id, scene_id, name, x, y, color, COALESCE(owner_id, '')
 		FROM tokens WHERE campaign_id = ? AND scene_id = ? ORDER BY created_at, id`,

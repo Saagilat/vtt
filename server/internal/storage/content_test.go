@@ -274,6 +274,10 @@ func TestTableChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scene2, err := db.CreateScene(campaign.ID, image.ID, "Пещера", annotationFor(64, 64), false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -330,5 +334,35 @@ func TestTableChat(t *testing.T) {
 	moved, ok := reply["token"].(map[string]any)
 	if reply["type"] != "token.moved" || !ok || moved["x"] != float64(40) {
 		t.Fatalf("ответ движения: %+v", reply)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "scene.show", "scene_id": scene2.ID, "intent_id": "i4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("scene.show: %v", err)
+	}
+	shown, ok := reply["scene"].(map[string]any)
+	if reply["type"] != "scene.shown" || !ok || shown["id"] != scene2.ID {
+		t.Fatalf("ответ сцены: %+v", reply)
+	}
+	for _, item := range db.Scenes(campaign.ID) {
+		if item.ID == scene2.ID && !item.Active {
+			t.Fatalf("сцена не стала активной")
+		}
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.place", "name": "Второй", "x": 5, "y": 6, "intent_id": "i5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("token на новой сцене: %v", err)
+	}
+	second, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.placed" || !ok || second["scene_id"] != scene2.ID {
+		t.Fatalf("фишка не переехала на новую сцену: %+v", reply)
 	}
 }

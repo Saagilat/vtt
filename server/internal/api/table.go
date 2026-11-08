@@ -20,6 +20,7 @@ type tableRoom struct {
 	mu      sync.Mutex
 	clients map[*websocket.Conn]bool
 	seq     int64
+	sceneID string
 }
 
 func newTableHub() *tableHub {
@@ -76,6 +77,18 @@ func (r *tableRoom) nextSeq() int64 {
 	return r.seq
 }
 
+func (r *tableRoom) currentScene() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sceneID
+}
+
+func (r *tableRoom) setScene(sceneID string) {
+	r.mu.Lock()
+	r.sceneID = sceneID
+	r.mu.Unlock()
+}
+
 func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	account, _, ok := s.whoami(w, r)
 	if !ok {
@@ -86,33 +99,46 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
 		return
 	}
-	sceneID := r.URL.Query().Get("scene_id")
-	if sceneID == "" {
+	requested := r.URL.Query().Get("scene_id")
+	if requested == "" {
 		for _, scene := range s.content.Scenes(campaign.ID) {
 			if scene.Active {
-				sceneID = scene.ID
+				requested = scene.ID
 				break
 			}
 		}
 	}
+	room := s.hub.room(campaign.ID)
+	room.mu.Lock()
+	if room.sceneID == "" {
+		room.sceneID = requested
+	}
+	sceneID := room.sceneID
+	room.mu.Unlock()
+	if sceneID != "" {
+		if _, ok := s.content.Scene(campaign.ID, sceneID); !ok {
+			sceneID = ""
+			if _, ok := s.content.Scene(campaign.ID, requested); ok {
+				sceneID = requested
+			}
+			room.mu.Lock()
+			room.sceneID = sceneID
+			room.mu.Unlock()
+		}
+	}
 	tokens := []Token{}
 	if sceneID != "" {
-		if _, ok := s.content.Scene(campaign.ID, sceneID); ok {
-			tokens = s.content.Tokens(campaign.ID, sceneID)
-		} else {
-			sceneID = ""
-		}
+		tokens = s.content.Tokens(campaign.ID, sceneID)
 	}
 	actions := []string{"chat.say", "token.move"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place")
+		actions = append(actions, "token.place", "scene.show")
 	}
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
-	room := s.hub.room(campaign.ID)
 	hello := map[string]any{
 		"type": "hello",
 		"seq":  room.nextSeq(),
@@ -173,7 +199,44 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"channel": channel,
 				"actor":   account,
 			})
+		case "scene.show":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "сцену показывает мастер"},
+				})
+				continue
+			}
+			var shown SceneSummary
+			found := false
+			for _, item := range s.content.Scenes(campaign.ID) {
+				if item.ID == message.SceneID {
+					shown = item
+					found = true
+					break
+				}
+			}
+			if !found {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "сцены нет"},
+				})
+				continue
+			}
+			s.content.SetActiveScene(campaign.ID, shown.ID)
+			room.setScene(shown.ID)
+			room.broadcast(map[string]any{
+				"type":   "scene.shown",
+				"seq":    room.nextSeq(),
+				"time":   s.now().UTC().Format(time.RFC3339),
+				"scene":  shown,
+				"tokens": s.content.Tokens(campaign.ID, shown.ID),
+				"actor":  account,
+			})
 		case "token.place":
+			current := room.currentScene()
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -182,7 +245,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			if sceneID == "" || message.X < 0 || message.Y < 0 || message.X > 100000 || message.Y > 100000 {
+			if current == "" || message.X < 0 || message.Y < 0 || message.X > 100000 || message.Y > 100000 {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
 					"intent_id": message.IntentID,
@@ -190,7 +253,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			token, ok := s.content.CreateToken(campaign.ID, sceneID, account.ID, message.Name, message.X, message.Y)
+			token, ok := s.content.CreateToken(campaign.ID, current, account.ID, message.Name, message.X, message.Y)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -207,7 +270,8 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"actor": account,
 			})
 		case "token.move":
-			token, ok := s.content.Token(campaign.ID, sceneID, message.TokenID)
+			current := room.currentScene()
+			token, ok := s.content.Token(campaign.ID, current, message.TokenID)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
@@ -232,7 +296,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
-			moved, ok := s.content.MoveToken(campaign.ID, sceneID, message.TokenID, message.X, message.Y)
+			moved, ok := s.content.MoveToken(campaign.ID, current, message.TokenID, message.X, message.Y)
 			if !ok {
 				_ = room.send(conn, map[string]any{
 					"type":      "error",
