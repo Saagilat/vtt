@@ -67,6 +67,7 @@ type tableMessage struct {
 	CharacterID *string `json:"character_id,omitempty"`
 	AccountID   string  `json:"account_id,omitempty"`
 	Open        bool    `json:"open,omitempty"`
+	Start       bool    `json:"start,omitempty"`
 	X           float64 `json:"x,omitempty"`
 	Y           float64 `json:"y,omitempty"`
 	HP          *int    `json:"hp,omitempty"`
@@ -624,6 +625,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			current := room.currentScene()
+			rolled := make([]Token, 0, 8)
 			for _, token := range s.content.Tokens(campaign.ID, current) {
 				bonus := s.tokenInitiativeBonus(campaign.ID, token)
 				result, err := parseRoll(fmt.Sprintf("1d20%+d", bonus))
@@ -635,6 +637,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					continue
 				}
+				rolled = append(rolled, updated)
 				room.broadcast(map[string]any{
 					"type":    "initiative.rolled",
 					"seq":     room.nextSeq(),
@@ -643,6 +646,20 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 					"formula": result.Formula,
 					"total":   result.Total,
 					"actor":   account,
+				})
+			}
+			if message.Start && len(rolled) > 0 {
+				sort.SliceStable(rolled, func(i, j int) bool {
+					return rolled[i].Initiative > rolled[j].Initiative
+				})
+				s.content.SetTurn(campaign.ID, current, rolled[0].ID, 1)
+				room.broadcast(map[string]any{
+					"type":     "turn.set",
+					"seq":      room.nextSeq(),
+					"time":     s.now().UTC().Format(time.RFC3339),
+					"token_id": rolled[0].ID,
+					"round":    1,
+					"actor":    account,
 				})
 			}
 		case "visibility.peek":

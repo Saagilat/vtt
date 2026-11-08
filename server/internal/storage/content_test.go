@@ -458,6 +458,44 @@ func TestTableChat(t *testing.T) {
 	if !formulas["1d20"] || !formulas["1d20+3"] {
 		t.Fatalf("формулы массовой инициативы: %+v", formulas)
 	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "initiative.roll_all", "start": true, "intent_id": "i2f",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	totals := map[string]float64{}
+	var turnID string
+	var turnRound float64
+	for i := 0; i < 3; i++ {
+		if err := conn.ReadJSON(&reply); err != nil {
+			t.Fatalf("initiative.roll_all start: %v", err)
+		}
+		switch reply["type"] {
+		case "initiative.rolled":
+			rolled, _ := reply["token"].(map[string]any)
+			id, _ := rolled["id"].(string)
+			total, _ := reply["total"].(float64)
+			totals[id] = total
+		case "turn.set":
+			turnID, _ = reply["token_id"].(string)
+			turnRound, _ = reply["round"].(float64)
+		default:
+			t.Fatalf("неожиданное событие: %+v", reply)
+		}
+	}
+	if len(totals) != 2 || turnRound != 1 {
+		t.Fatalf("автостарт боя: totals=%v turn=%q round=%v", totals, turnID, turnRound)
+	}
+	bestID := ""
+	bestTotal := -1.0
+	for id, total := range totals {
+		if total > bestTotal {
+			bestID, bestTotal = id, total
+		}
+	}
+	if turnID != bestID {
+		t.Fatalf("первым ходит не лучший: turn=%q best=%q", turnID, bestID)
+	}
 
 	if err := conn.WriteJSON(map[string]any{
 		"type": "scene.show", "scene_id": scene2.ID, "intent_id": "i4",

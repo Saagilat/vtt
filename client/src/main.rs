@@ -3058,8 +3058,12 @@ impl App {
         }));
     }
 
-    fn roll_all_initiative(&mut self) {
-        self.send_intent(serde_json::json!({"type": "initiative.roll_all"}));
+    fn roll_all_initiative(&mut self, start: bool) {
+        let mut payload = serde_json::json!({"type": "initiative.roll_all"});
+        if start {
+            payload["start"] = Value::Bool(true);
+        }
+        self.send_intent(payload);
     }
 
     fn link_token(&mut self, token_id: &str, character_id: &str) {
@@ -3895,7 +3899,14 @@ impl App {
                     .on_hover_text("бросить d20 + ЛОВ для всех фишек сцены")
                     .clicked()
                 {
-                    self.roll_all_initiative();
+                    self.roll_all_initiative(false);
+                }
+                if ui
+                    .button("Инициатива и бой")
+                    .on_hover_text("бросить всем и начать первый круг")
+                    .clicked()
+                {
+                    self.roll_all_initiative(true);
                 }
                 let label = if self.round == 0 {
                     "Начать бой"
