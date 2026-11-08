@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Saagilat/vtt/server/internal/annotation"
 )
 
 const (
@@ -71,6 +73,11 @@ type Sessions interface {
 type Config struct {
 	Directory Directory
 	Sessions  Sessions
+	// Content — кампании, картинки и сцены. Если nil, маршруты контента не
+	// регистрируются: вход и сессии проверяются отдельно.
+	Content Content
+	// Validator проверяет annotation.json при импорте. Обязателен, если Content задан.
+	Validator *annotation.Validator
 	// Now и Token подменяются в тестах: иначе случаи не смогут сравнить ответ
 	// целиком. В бою — время и crypto/rand.
 	Now   func() time.Time
@@ -78,10 +85,12 @@ type Config struct {
 }
 
 type server struct {
-	dir      Directory
-	sessions Sessions
-	now      func() time.Time
-	token    func() string
+	dir       Directory
+	sessions  Sessions
+	content   Content
+	validator *annotation.Validator
+	now       func() time.Time
+	token     func() string
 	// auth — одна проверка пароля одновременно (server/API.md, "busy").
 	auth    chan struct{}
 	handler http.Handler
@@ -95,12 +104,17 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Sessions == nil {
 		return nil, errors.New("api: нужны Sessions")
 	}
+	if cfg.Content != nil && cfg.Validator == nil {
+		return nil, errors.New("api: для контента нужен Validator")
+	}
 	s := &server{
-		dir:      cfg.Directory,
-		sessions: cfg.Sessions,
-		now:      cfg.Now,
-		token:    cfg.Token,
-		auth:     make(chan struct{}, 1),
+		dir:       cfg.Directory,
+		sessions:  cfg.Sessions,
+		content:   cfg.Content,
+		validator: cfg.Validator,
+		now:       cfg.Now,
+		token:     cfg.Token,
+		auth:      make(chan struct{}, 1),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -112,6 +126,16 @@ func New(cfg Config) (http.Handler, error) {
 	mux.HandleFunc("POST /v1/sessions", s.login)
 	mux.HandleFunc("DELETE /v1/sessions/current", s.logout)
 	mux.HandleFunc("GET /v1/me", s.me)
+	if s.content != nil {
+		mux.HandleFunc("GET /v1/campaigns", s.listCampaigns)
+		mux.HandleFunc("POST /v1/campaigns", s.createCampaign)
+		mux.HandleFunc("GET /v1/campaigns/{id}", s.getCampaign)
+		mux.HandleFunc("POST /v1/campaigns/{id}/images", s.uploadImage)
+		mux.HandleFunc("GET /v1/campaigns/{id}/images/{iid}", s.getImage)
+		mux.HandleFunc("POST /v1/campaigns/{id}/scenes:import", s.importScene)
+		mux.HandleFunc("GET /v1/campaigns/{id}/scenes", s.listScenes)
+		mux.HandleFunc("GET /v1/campaigns/{id}/scenes/{sid}", s.getScene)
+	}
 	mux.HandleFunc("/", s.notFound)
 	s.handler = mux
 	return s, nil

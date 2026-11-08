@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -260,6 +261,171 @@ func (d *DB) Lookup(token string) (string, time.Time, bool) {
 // Delete — убрать токен (api.Sessions).
 func (d *DB) Delete(token string) {
 	_, _ = d.db.Exec("DELETE FROM sessions WHERE token = ?", token)
+}
+
+// ImageBytes отдаёт байты картинки кампании.
+func (d *DB) ImageBytes(campaignID, imageID string) ([]byte, string, bool) {
+	var data []byte
+	var mime string
+	err := d.db.QueryRow(`SELECT data, mime FROM images WHERE campaign_id = ? AND id = ?`,
+		campaignID, imageID).Scan(&data, &mime)
+	if err != nil {
+		return nil, "", false
+	}
+	return data, mime, true
+}
+
+func (d *DB) CreateCampaignFor(ownerID, name string) (api.Campaign, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return api.Campaign{}, errors.New("storage: пустое имя кампании")
+	}
+	id, err := newID("c")
+	if err != nil {
+		return api.Campaign{}, err
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return api.Campaign{}, err
+	}
+	if _, err := tx.Exec("INSERT INTO campaigns (id, name) VALUES (?, ?)", id, name); err != nil {
+		tx.Rollback()
+		return api.Campaign{}, fmt.Errorf("storage: кампания %q: %w", name, err)
+	}
+	if _, err := tx.Exec("INSERT INTO memberships (account_id, campaign_id, role) VALUES (?, ?, ?)",
+		ownerID, id, api.RoleOwner); err != nil {
+		tx.Rollback()
+		return api.Campaign{}, fmt.Errorf("storage: владелец кампании: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return api.Campaign{}, err
+	}
+	return api.Campaign{ID: id, Name: name, Role: api.RoleOwner}, nil
+}
+
+// Campaign — кампания с составом, если человек в ней состоит.
+func (d *DB) Campaign(accountID, campaignID string) (api.CampaignDetail, bool) {
+	var detail api.CampaignDetail
+	err := d.db.QueryRow(`SELECT c.id, c.name, m.role
+		FROM campaigns c JOIN memberships m ON m.campaign_id = c.id
+		WHERE c.id = ? AND m.account_id = ?`, campaignID, accountID).
+		Scan(&detail.ID, &detail.Name, &detail.Role)
+	if err != nil {
+		return api.CampaignDetail{}, false
+	}
+	rows, err := d.db.Query(`SELECT a.id, a.login, m.role
+		FROM memberships m JOIN accounts a ON a.id = m.account_id
+		WHERE m.campaign_id = ? ORDER BY a.login`, campaignID)
+	if err != nil {
+		return api.CampaignDetail{}, false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var member api.Member
+		if err := rows.Scan(&member.ID, &member.Login, &member.Role); err != nil {
+			return api.CampaignDetail{}, false
+		}
+		detail.Members = append(detail.Members, member)
+	}
+	return detail, true
+}
+
+// AddImage кладёт картинку в библиотеку кампании; повтор по sha256 не плодит копию.
+func (d *DB) AddImage(campaignID string, data []byte, mime string, width, height int, sha string) (api.Image, error) {
+	id, err := newID("i")
+	if err != nil {
+		return api.Image{}, err
+	}
+	if _, err := d.db.Exec(`INSERT OR IGNORE INTO images
+		(id, campaign_id, sha256, width, height, mime, data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, campaignID, sha, width, height, mime, data); err != nil {
+		return api.Image{}, fmt.Errorf("storage: картинка: %w", err)
+	}
+	var image api.Image
+	err = d.db.QueryRow(`SELECT id, sha256, width, height, mime FROM images
+		WHERE campaign_id = ? AND sha256 = ?`, campaignID, sha).
+		Scan(&image.ID, &image.SHA256, &image.Width, &image.Height, &image.Mime)
+	if err != nil {
+		return api.Image{}, err
+	}
+	return image, nil
+}
+
+// CreateScene сохраняет сцену вместе с разметкой.
+func (d *DB) CreateScene(campaignID, imageID, name string, annotation []byte, active bool) (api.Scene, error) {
+	id, err := newID("s")
+	if err != nil {
+		return api.Scene{}, err
+	}
+	activeValue := 0
+	if active {
+		activeValue = 1
+	}
+	if _, err := d.db.Exec(`INSERT INTO scenes
+		(id, campaign_id, image_id, name, annotation, light, active, created_at)
+		VALUES (?, ?, ?, ?, ?, 'bright', ?, ?)`,
+		id, campaignID, imageID, name, string(annotation), activeValue,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return api.Scene{}, fmt.Errorf("storage: сцена: %w", err)
+	}
+	scene, ok := d.Scene(campaignID, id)
+	if !ok {
+		return api.Scene{}, errors.New("storage: сцена не читается после записи")
+	}
+	return scene, nil
+}
+
+func (d *DB) sceneRow(query string, args ...any) (api.Scene, bool) {
+	var (
+		scene      api.Scene
+		annotation string
+	)
+	err := d.db.QueryRow(query, args...).Scan(&scene.ID, &scene.Name, &annotation,
+		&scene.Light, &scene.Active, &scene.Image.ID, &scene.Image.SHA256,
+		&scene.Image.Width, &scene.Image.Height, &scene.Image.Mime)
+	if err != nil {
+		return api.Scene{}, false
+	}
+	var parts map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(annotation), &parts); err != nil {
+		return api.Scene{}, false
+	}
+	scene.Grid = parts["grid"]
+	scene.Walls = parts["walls"]
+	scene.Doors = parts["doors"]
+	scene.Areas = parts["areas"]
+	return scene, true
+}
+
+// Scene — сцена кампании вместе с картинкой и геометрией.
+func (d *DB) Scene(campaignID, sceneID string) (api.Scene, bool) {
+	return d.sceneRow(`SELECT s.id, s.name, s.annotation, s.light, s.active,
+		i.id, i.sha256, i.width, i.height, i.mime
+		FROM scenes s JOIN images i ON i.id = s.image_id
+		WHERE s.campaign_id = ? AND s.id = ?`, campaignID, sceneID)
+}
+
+// Scenes — список сцен кампании без геометрии.
+func (d *DB) Scenes(campaignID string) []api.SceneSummary {
+	rows, err := d.db.Query(`SELECT s.id, s.name, s.active,
+		i.id, i.sha256, i.width, i.height, i.mime
+		FROM scenes s JOIN images i ON i.id = s.image_id
+		WHERE s.campaign_id = ? ORDER BY s.created_at, s.id`, campaignID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]api.SceneSummary, 0, 4)
+	for rows.Next() {
+		var item api.SceneSummary
+		if err := rows.Scan(&item.ID, &item.Name, &item.Active,
+			&item.Image.ID, &item.Image.SHA256, &item.Image.Width,
+			&item.Image.Height, &item.Image.Mime); err != nil {
+			return nil
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func newID(prefix string) (string, error) {

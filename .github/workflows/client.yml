@@ -1,0 +1,40 @@
+name: client
+
+# CI по путям (docs/projects.md, правило 4): правка в client/ запускает его сборку,
+# а правка в contract/ — тоже: клиент читает annotation.json.
+on:
+  push:
+    paths:
+      - 'client/**'
+      - 'contract/**'
+      - '.github/workflows/client.yml'
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'contract/**'
+      - '.github/workflows/client.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v5
+      - name: Системные библиотеки окна
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Форматирование
+        run: cargo fmt --check
+      - name: Тесты
+        run: cargo test
+      - name: Сборка
+        run: cargo build
+      - name: Версия — граница с лаунчером
+        run: ./target/debug/client --version

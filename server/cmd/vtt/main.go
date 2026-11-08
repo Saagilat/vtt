@@ -93,12 +93,13 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	// Схему читаем на старте: сервер, который не понимает контракт, не должен делать вид,
 	// что жив. Импорта карт ещё нет, проверять пока нечего, но путь до схемы обязан работать
 	// с первого коммита.
-	if _, err := annotation.LoadSchema(*schema); err != nil {
+	validator, err := annotation.LoadSchema(*schema)
+	if err != nil {
 		fmt.Fprintf(stderr, "vtt: схема контракта не читается (%s): %v\n", *schema, err)
 		return exitLaunch
 	}
 	if *mode == "game" && *listen != "" {
-		return serveGame(*dbPath, *listen, stdout, stderr)
+		return serveGame(*dbPath, *listen, validator, stdout, stderr)
 	}
 	fmt.Fprintf(stdout,
 		"vtt %s: режим %s, схема контракта прочитана; HTTP не слушается без --listen\n",
@@ -107,14 +108,14 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer) int {
 }
 
 // serveGame — режим игры: база, API и HTTP на --listen.
-func serveGame(dbPath, listen string, stdout, stderr io.Writer) int {
+func serveGame(dbPath, listen string, validator *annotation.Validator, stdout, stderr io.Writer) int {
 	db, err := storage.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "vtt: база: %v\n", err)
 		return exitLaunch
 	}
 	defer db.Close()
-	handler, err := api.New(api.Config{Directory: db, Sessions: db})
+	handler, err := api.New(api.Config{Directory: db, Sessions: db, Content: db, Validator: validator})
 	if err != nil {
 		fmt.Fprintf(stderr, "vtt: API: %v\n", err)
 		return exitLaunch

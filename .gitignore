@@ -36,3 +36,6 @@ scripts/experiments/**/review/
 scripts/experiments/**/models/
 scripts/experiments/**/results/
 scripts/experiments/**/cases/
+
+# Сборка Rust
+/client/target/
