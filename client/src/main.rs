@@ -33,6 +33,8 @@ struct Campaign {
     id: String,
     name: String,
     role: String,
+    #[serde(default)]
+    archived: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -357,6 +359,7 @@ struct App {
     token: Option<String>,
     account: Option<Account>,
     campaigns: Vec<Campaign>,
+    show_archived: bool,
     campaign: Option<Campaign>,
     campaign_detail: Option<CampaignDetail>,
     new_campaign: String,
@@ -448,6 +451,7 @@ impl App {
             token: None,
             account: None,
             campaigns: Vec::new(),
+            show_archived: false,
             campaign: None,
             campaign_detail: None,
             new_campaign: String::new(),
@@ -650,6 +654,15 @@ impl App {
             .map_err(|error| error.to_string())
     }
 
+    fn post_empty(&self, path: &str) -> Result<(), String> {
+        let token = self.token.as_deref().unwrap_or("");
+        ureq::post(&format!("{}{}", self.base_url, path))
+            .set("Authorization", &format!("Bearer {token}"))
+            .call()
+            .map_err(format_error)?;
+        Ok(())
+    }
+
     fn delete_request(&self, path: &str) -> Result<(), String> {
         let token = self.token.as_deref().unwrap_or("");
         ureq::delete(&format!("{}{}", self.base_url, path))
@@ -679,7 +692,12 @@ impl App {
     }
 
     fn load_campaigns(&mut self) -> Result<(), String> {
-        let me: Me = self.get_json("/v1/me")?;
+        let path = if self.show_archived {
+            "/v1/me?archived=1"
+        } else {
+            "/v1/me"
+        };
+        let me: Me = self.get_json(path)?;
         self.account = Some(me.account);
         self.campaigns = me.campaigns;
         self.screen = Screen::Campaigns;
@@ -796,6 +814,39 @@ impl App {
             Ok(()) => {
                 self.notice = "участник убран из кампании".to_string();
                 self.refresh_campaign_detail();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn archive_campaign(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        match self.post_empty(&format!("/v1/campaigns/{}/archive", campaign.id)) {
+            Ok(()) => {
+                self.campaign = None;
+                self.campaign_detail = None;
+                self.scenes.clear();
+                self.scene = None;
+                self.show_archived = false;
+                if let Err(error) = self.load_campaigns() {
+                    self.error = error;
+                }
+                self.notice = format!("кампания «{}» в архиве", campaign.name);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn unarchive_campaign(&mut self, campaign: &Campaign) {
+        match self.post_empty(&format!("/v1/campaigns/{}/unarchive", campaign.id)) {
+            Ok(()) => {
+                if let Err(error) = self.load_campaigns() {
+                    self.error = error;
+                }
+                self.notice = format!("кампания «{}» возвращена", campaign.name);
             }
             Err(error) => self.error = error,
         }
@@ -1425,84 +1476,128 @@ impl App {
 
     fn show_campaigns(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
+        let mut switched = false;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Кампании")
+                    .size(30.0)
+                    .strong()
+                    .color(WARM_ACCENT),
+            );
+            if ui
+                .button(if self.show_archived {
+                    "Активные"
+                } else {
+                    "Архив"
+                })
+                .clicked()
+            {
+                self.show_archived = !self.show_archived;
+                switched = true;
+            }
+        });
+        if switched {
+            if let Err(error) = self.load_campaigns() {
+                self.error = error;
+            }
+            return;
+        }
         ui.label(
-            egui::RichText::new("Кампании")
-                .size(30.0)
-                .strong()
-                .color(WARM_ACCENT),
-        );
-        ui.label(
-            egui::RichText::new("выберите стол или создайте новый")
-                .size(16.0)
-                .color(WARM_MUTED),
+            egui::RichText::new(if self.show_archived {
+                "архив: кампании скрыты из основного списка"
+            } else {
+                "выберите стол или создайте новый"
+            })
+            .size(16.0)
+            .color(WARM_MUTED),
         );
         ui.add_space(10.0);
         if self.campaigns.is_empty() {
-            ui.label("пока пусто — создайте кампанию или войдите по коду");
+            ui.label(if self.show_archived {
+                "архив пуст"
+            } else {
+                "пока пусто — создайте кампанию или войдите по коду"
+            });
         }
         let items = self.campaigns.clone();
         let card_width = ui.available_width().min(760.0);
         for campaign in items {
-            let subtitle = format!("роль: {}", role_name(&campaign.role));
-            if card_button(ui, &campaign.name, &subtitle, card_width).clicked() {
-                self.open_campaign(campaign);
+            if self.show_archived {
+                let subtitle = if campaign.archived {
+                    format!("в архиве · роль: {}", role_name(&campaign.role))
+                } else {
+                    format!("роль: {}", role_name(&campaign.role))
+                };
+                let _ = card_button(ui, &campaign.name, &subtitle, card_width);
+                if campaign.role == "owner" {
+                    if accent_button(ui, "Вернуть из архива", 220.0).clicked() {
+                        self.unarchive_campaign(&campaign);
+                    }
+                }
+            } else {
+                let subtitle = format!("роль: {}", role_name(&campaign.role));
+                if card_button(ui, &campaign.name, &subtitle, card_width).clicked() {
+                    self.open_campaign(campaign);
+                }
             }
             ui.add_space(6.0);
         }
-        ui.add_space(12.0);
-        warm_frame(WARM_PANEL).show(ui, |ui| {
-            ui.set_width(card_width);
-            ui.label(
-                egui::RichText::new("Новая кампания")
-                    .size(20.0)
-                    .strong()
-                    .color(WARM_TEXT),
-            );
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [320.0, 40.0],
-                    egui::TextEdit::singleline(&mut self.new_campaign).hint_text("название"),
+        if !self.show_archived {
+            ui.add_space(12.0);
+            warm_frame(WARM_PANEL).show(ui, |ui| {
+                ui.set_width(card_width);
+                ui.label(
+                    egui::RichText::new("Новая кампания")
+                        .size(20.0)
+                        .strong()
+                        .color(WARM_TEXT),
                 );
-                if accent_button(ui, "Создать", 140.0).clicked() {
-                    self.create_campaign();
-                }
-                if ui
-                    .add_sized(
-                        [150.0, 42.0],
-                        egui::Button::new(egui::RichText::new("Демо-стол").strong())
-                            .fill(WARM_ACCENT_DARK)
-                            .stroke(egui::Stroke::new(1.5, WARM_ACCENT)),
-                    )
-                    .clicked()
-                {
-                    self.create_demo();
-                }
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [320.0, 40.0],
+                        egui::TextEdit::singleline(&mut self.new_campaign).hint_text("название"),
+                    );
+                    if accent_button(ui, "Создать", 140.0).clicked() {
+                        self.create_campaign();
+                    }
+                    if ui
+                        .add_sized(
+                            [150.0, 42.0],
+                            egui::Button::new(egui::RichText::new("Демо-стол").strong())
+                                .fill(WARM_ACCENT_DARK)
+                                .stroke(egui::Stroke::new(1.5, WARM_ACCENT)),
+                        )
+                        .clicked()
+                    {
+                        self.create_demo();
+                    }
+                });
             });
-        });
-        ui.add_space(10.0);
-        warm_frame(WARM_PANEL).show(ui, |ui| {
-            ui.set_width(card_width);
-            ui.label(
-                egui::RichText::new("Войти по коду")
-                    .size(20.0)
-                    .strong()
-                    .color(WARM_TEXT),
-            );
-            ui.label(
-                egui::RichText::new("код приглашения выдаёт мастер кампании")
-                    .size(15.0)
-                    .color(WARM_MUTED),
-            );
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [240.0, 40.0],
-                    egui::TextEdit::singleline(&mut self.join_code).hint_text("код от мастера"),
+            ui.add_space(10.0);
+            warm_frame(WARM_PANEL).show(ui, |ui| {
+                ui.set_width(card_width);
+                ui.label(
+                    egui::RichText::new("Войти по коду")
+                        .size(20.0)
+                        .strong()
+                        .color(WARM_TEXT),
                 );
-                if accent_button(ui, "Войти", 140.0).clicked() {
-                    self.accept_invite();
-                }
+                ui.label(
+                    egui::RichText::new("код приглашения выдаёт мастер кампании")
+                        .size(15.0)
+                        .color(WARM_MUTED),
+                );
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [240.0, 40.0],
+                        egui::TextEdit::singleline(&mut self.join_code).hint_text("код от мастера"),
+                    );
+                    if accent_button(ui, "Войти", 140.0).clicked() {
+                        self.accept_invite();
+                    }
+                });
             });
-        });
+        }
     }
 
     fn show_scenes(&mut self, ui: &mut egui::Ui) {
@@ -1524,6 +1619,9 @@ impl App {
             if campaign.role == "owner" {
                 if accent_button(ui, "Пригласить игрока", 230.0).clicked() {
                     self.create_invite();
+                }
+                if ui.button("В архив").clicked() {
+                    self.archive_campaign();
                 }
                 if !self.invite_code.is_empty() {
                     ui.label(

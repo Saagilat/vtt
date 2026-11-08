@@ -1107,6 +1107,100 @@ func TestTransferOwnershipREST(t *testing.T) {
 	}
 }
 
+func TestCampaignArchive(t *testing.T) {
+	db := openTemp(t)
+	alice, err := db.CreateAccount("alice", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, err := db.CreateCampaignFor(alice.ID, "Вечер")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !db.SetCampaignArchived(campaign.ID, true) {
+		t.Fatal("кампания не ушла в архив")
+	}
+	if items := db.Campaigns(alice.ID); len(items) != 0 {
+		t.Fatalf("архив в активных: %+v", items)
+	}
+	archived := db.ArchivedCampaigns(alice.ID)
+	if len(archived) != 1 || archived[0].ID != campaign.ID || !archived[0].Archived {
+		t.Fatalf("архив: %+v", archived)
+	}
+	if !db.SetCampaignArchived(campaign.ID, false) {
+		t.Fatal("кампания не вернулась")
+	}
+	if items := db.Campaigns(alice.ID); len(items) != 1 || items[0].Archived {
+		t.Fatalf("возврат из архива: %+v", items)
+	}
+}
+
+func TestCampaignArchiveREST(t *testing.T) {
+	handler, db, _ := newContentHandler(t)
+	alice := login(t, handler, "alice", "пароль")
+	create := httptest.NewRequest("POST", "/v1/campaigns", strings.NewReader(`{"name":"Архивная"}`))
+	create.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, create)
+	var campaign api.Campaign
+	if err := json.Unmarshal(rec.Body.Bytes(), &campaign); err != nil {
+		t.Fatal(err)
+	}
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bobAccount.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, handler, "bob", "пароль")
+
+	archive := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/archive", nil)
+	archive.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, archive)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("архив: %d %s", rec.Code, rec.Body)
+	}
+	active := httptest.NewRequest("GET", "/v1/me", nil)
+	active.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, active)
+	if strings.Contains(rec.Body.String(), "Архивная") {
+		t.Fatalf("архив в активных: %s", rec.Body)
+	}
+	archived := httptest.NewRequest("GET", "/v1/me?archived=1", nil)
+	archived.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, archived)
+	if !strings.Contains(rec.Body.String(), "Архивная") {
+		t.Fatalf("архив не найден: %s", rec.Body)
+	}
+
+	foreign := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/archive", nil)
+	foreign.Header.Set("Authorization", "Bearer "+bob)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, foreign)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("игрок архивировал кампанию: %d %s", rec.Code, rec.Body)
+	}
+
+	restore := httptest.NewRequest("POST", "/v1/campaigns/"+campaign.ID+"/unarchive", nil)
+	restore.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, restore)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("возврат: %d %s", rec.Code, rec.Body)
+	}
+	active = httptest.NewRequest("GET", "/v1/me", nil)
+	active.Header.Set("Authorization", "Bearer "+alice)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, active)
+	if !strings.Contains(rec.Body.String(), "Архивная") {
+		t.Fatalf("кампания не вернулась: %s", rec.Body)
+	}
+}
+
 func TestInviteJoinByCode(t *testing.T) {
 	handler, db, account := newContentHandler(t)
 	alice := login(t, handler, "alice", "пароль")

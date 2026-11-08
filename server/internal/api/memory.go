@@ -77,8 +77,28 @@ func (m *Memory) Campaigns(accountID string) []Campaign {
 	if !ok {
 		return nil
 	}
-	out := make([]Campaign, len(entry.campaigns))
-	copy(out, entry.campaigns)
+	out := make([]Campaign, 0, len(entry.campaigns))
+	for _, campaign := range entry.campaigns {
+		if !campaign.Archived {
+			out = append(out, campaign)
+		}
+	}
+	return out
+}
+
+func (m *Memory) ArchivedCampaigns(accountID string) []Campaign {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entry, ok := m.byID[accountID]
+	if !ok {
+		return nil
+	}
+	out := make([]Campaign, 0, len(entry.campaigns))
+	for _, campaign := range entry.campaigns {
+		if campaign.Archived {
+			out = append(out, campaign)
+		}
+	}
 	return out
 }
 

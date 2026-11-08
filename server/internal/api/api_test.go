@@ -115,3 +115,6 @@ func (d *blockingDirectory) ByID(id string) (Account, bool) {
 }
 
 func (d *blockingDirectory) Campaigns(string) []Campaign { return nil }
+func (d *blockingDirectory) ArchivedCampaigns(string) []Campaign {
+	return nil
+}

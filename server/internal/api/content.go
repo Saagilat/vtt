@@ -141,6 +141,7 @@ var (
 type Content interface {
 	CreateCampaignFor(ownerID, name string) (Campaign, error)
 	Campaign(accountID, campaignID string) (CampaignDetail, bool)
+	SetCampaignArchived(campaignID string, archived bool) bool
 	CreateInvite(campaignID, createdBy string, expires time.Time) (Invite, error)
 	AcceptInvite(code, accountID string, now time.Time) (Campaign, error)
 	AddImage(campaignID string, data []byte, mime string, width, height int, sha string) (Image, error)
@@ -193,6 +194,9 @@ func (s *server) listCampaigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	campaigns := s.dir.Campaigns(account.ID)
+	if r.URL.Query().Get("archived") == "1" {
+		campaigns = s.dir.ArchivedCampaigns(account.ID)
+	}
 	if campaigns == nil {
 		campaigns = []Campaign{}
 	}
@@ -1015,4 +1019,33 @@ func (s *server) transferOwnership(w http.ResponseWriter, r *http.Request) {
 		"account_id": req.AccountID,
 		"role":       RoleOwner,
 	})
+}
+
+func (s *server) archiveCampaign(w http.ResponseWriter, r *http.Request) {
+	s.setCampaignArchived(w, r, true)
+}
+
+func (s *server) unarchiveCampaign(w http.ResponseWriter, r *http.Request) {
+	s.setCampaignArchived(w, r, false)
+}
+
+func (s *server) setCampaignArchived(w http.ResponseWriter, r *http.Request, archived bool) {
+	account, _, ok := s.whoami(w, r)
+	if !ok {
+		return
+	}
+	campaign, ok := s.content.Campaign(account.ID, r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "кампании нет")
+		return
+	}
+	if campaign.Role != RoleOwner {
+		writeError(w, http.StatusForbidden, "forbidden", "архивом управляет владелец")
+		return
+	}
+	if !s.content.SetCampaignArchived(campaign.ID, archived) {
+		writeError(w, http.StatusConflict, "conflict", "архив не изменился")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

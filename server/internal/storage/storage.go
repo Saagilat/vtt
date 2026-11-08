@@ -179,10 +179,14 @@ func (d *DB) ByID(id string) (api.Account, bool) {
 }
 
 // Campaigns — кампании, где человек участник, с его ролью в каждой.
-func (d *DB) Campaigns(accountID string) []api.Campaign {
+func (d *DB) campaigns(accountID string, archived bool) []api.Campaign {
+	condition := "c.archived_at IS NULL"
+	if archived {
+		condition = "c.archived_at IS NOT NULL"
+	}
 	rows, err := d.db.Query(`SELECT c.id, c.name, m.role
 		FROM memberships m JOIN campaigns c ON c.id = m.campaign_id
-		WHERE m.account_id = ? ORDER BY c.name, c.id`, accountID)
+		WHERE m.account_id = ? AND `+condition+` ORDER BY c.name, c.id`, accountID)
 	if err != nil {
 		return nil
 	}
@@ -193,9 +197,35 @@ func (d *DB) Campaigns(accountID string) []api.Campaign {
 		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.Role); err != nil {
 			return nil
 		}
+		campaign.Archived = archived
 		out = append(out, campaign)
 	}
 	return out
+}
+
+// Campaigns — активные кампании участника.
+func (d *DB) Campaigns(accountID string) []api.Campaign {
+	return d.campaigns(accountID, false)
+}
+
+// ArchivedCampaigns — кампании участника, убранные в архив.
+func (d *DB) ArchivedCampaigns(accountID string) []api.Campaign {
+	return d.campaigns(accountID, true)
+}
+
+// SetCampaignArchived убирает кампанию в архив или возвращает обратно.
+func (d *DB) SetCampaignArchived(campaignID string, archived bool) bool {
+	var value any
+	if archived {
+		value = time.Now().UTC().Format(time.RFC3339)
+	}
+	result, err := d.db.Exec(`UPDATE campaigns SET archived_at = ? WHERE id = ?`,
+		value, campaignID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
 }
 
 // CreateCampaign заводит кампанию; участников добавляет AddMember.

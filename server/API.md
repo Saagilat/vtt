@@ -82,7 +82,7 @@ DELETE /v1/sessions/current → 204, тела нет
 
 | Метод и путь | Кто | Что делает |
 |---|---|---|
-| `GET /v1/campaigns` | вошедший | только свои кампании; в каждой `role`: `owner`, `master`, `player`, `observer` |
+| `GET /v1/campaigns` | вошедший | только свои активные кампании; в каждой `role`: `owner`, `master`, `player`, `observer`; `?archived=1` — архив |
 | `POST /v1/campaigns` | вошедший | `{"name", "system", "settings"}`; создатель — `owner` и `master` |
 | `GET /v1/campaigns/{id}` | участник | кампания, состав, моя роль, `actions` |
 | `PATCH /v1/campaigns/{id}` | владелец | имя, система правил, настройки |
@@ -94,6 +94,8 @@ DELETE /v1/sessions/current → 204, тела нет
 | `PUT /v1/campaigns/{id}/members/{account}` | владелец | `{"role": "master"}` — назначить или снять мастера |
 | `DELETE /v1/campaigns/{id}/members/{account}` | владелец | выгнать |
 | `POST /v1/campaigns/{id}/owner` | владелец | `{"account_id"}` — передать владение; прежний владелец становится мастером |
+| `POST /v1/campaigns/{id}/archive` | владелец | убрать кампанию в архив, скрыть из активного списка |
+| `POST /v1/campaigns/{id}/unarchive` | владелец | вернуть кампанию из архива |
 
 Приглашать можно только того, кто уже есть на сервере: заведение аккаунтов — отдельное действие
 владельца сервера. Мастеров может быть много и они равны; владелец один и только он меняет состав,

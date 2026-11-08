@@ -42,9 +42,10 @@ type Account struct {
 
 // Campaign — кампания глазами участника.
 type Campaign struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Role string `json:"role"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Archived bool   `json:"archived,omitempty"`
 }
 
 // Directory — аккаунты и их членство. Реализация с базой появится позже;
@@ -57,6 +58,8 @@ type Directory interface {
 	ByID(id string) (Account, bool)
 	// Campaigns — кампании, где человек участник, с его ролью в каждой.
 	Campaigns(accountID string) []Campaign
+	// ArchivedCampaigns — кампании в архиве, где человек остаётся участником.
+	ArchivedCampaigns(accountID string) []Campaign
 }
 
 // ErrBadCredentials — один ответ на неверный логин и неверный пароль.
@@ -138,6 +141,8 @@ func New(cfg Config) (http.Handler, error) {
 		mux.HandleFunc("PUT /v1/campaigns/{id}/members/{account}", s.updateMember)
 		mux.HandleFunc("DELETE /v1/campaigns/{id}/members/{account}", s.removeMember)
 		mux.HandleFunc("POST /v1/campaigns/{id}/owner", s.transferOwnership)
+		mux.HandleFunc("POST /v1/campaigns/{id}/archive", s.archiveCampaign)
+		mux.HandleFunc("POST /v1/campaigns/{id}/unarchive", s.unarchiveCampaign)
 		mux.HandleFunc("POST /v1/campaigns/{id}/images", s.uploadImage)
 		mux.HandleFunc("GET /v1/campaigns/{id}/images/{iid}", s.getImage)
 		mux.HandleFunc("POST /v1/campaigns/{id}/scenes:import", s.importScene)
@@ -218,6 +223,9 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	campaigns := s.dir.Campaigns(account.ID)
+	if r.URL.Query().Get("archived") == "1" {
+		campaigns = s.dir.ArchivedCampaigns(account.ID)
+	}
 	if campaigns == nil {
 		campaigns = []Campaign{}
 	}
