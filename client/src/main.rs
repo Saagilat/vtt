@@ -1,9 +1,10 @@
+use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 
 use eframe::egui;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -55,6 +56,13 @@ struct SceneSummary {
     active: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SessionFile {
+    base_url: String,
+    login: String,
+    token: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct Scene {
     #[allow(dead_code)]
@@ -96,6 +104,9 @@ struct App {
     notice: String,
     zoom: f32,
     offset: egui::Vec2,
+    image_path: String,
+    annotation_path: String,
+    scene_name: String,
     #[allow(dead_code)]
     install_dir: Option<PathBuf>,
 }
@@ -107,7 +118,7 @@ impl App {
         install_dir: Option<PathBuf>,
     ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        Self {
+        let mut app = Self {
             base_url,
             login: String::new(),
             password: String::new(),
@@ -124,8 +135,79 @@ impl App {
             notice: String::new(),
             zoom: 0.0,
             offset: egui::Vec2::ZERO,
+            image_path: String::new(),
+            annotation_path: String::new(),
+            scene_name: "Сцена".to_string(),
             install_dir,
+        };
+        app.resume_session();
+        app
+    }
+
+    fn session_file(&self) -> Option<PathBuf> {
+        self.install_dir
+            .as_ref()
+            .map(|dir| dir.join("session.json"))
+    }
+
+    fn resume_session(&mut self) {
+        let path = match self.session_file() {
+            Some(path) => path,
+            None => return,
+        };
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => return,
+        };
+        let saved: SessionFile = match serde_json::from_str(&text) {
+            Ok(saved) => saved,
+            Err(_) => return,
+        };
+        self.base_url = saved.base_url;
+        self.login = saved.login;
+        self.token = Some(saved.token);
+        if let Err(error) = self.load_campaigns() {
+            self.token = None;
+            self.screen = Screen::Login;
+            self.notice = "сессия истекла: ".to_string() + &error;
+        } else {
+            self.notice = "сессия восстановлена".to_string();
         }
+    }
+
+    fn save_session(&mut self) {
+        let (path, token, login) = match (&self.session_file(), &self.token, &self.account) {
+            (Some(path), Some(token), Some(account)) => {
+                (path.clone(), token.clone(), account.login.clone())
+            }
+            _ => return,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let saved = SessionFile {
+            base_url: self.base_url.clone(),
+            login,
+            token,
+        };
+        if let Ok(text) = serde_json::to_string_pretty(&saved) {
+            let _ = fs::write(path, text);
+        }
+    }
+
+    fn logout(&mut self) {
+        if let Some(path) = self.session_file() {
+            let _ = fs::remove_file(path);
+        }
+        self.token = None;
+        self.account = None;
+        self.campaigns.clear();
+        self.campaign = None;
+        self.scenes.clear();
+        self.scene = None;
+        self.texture = None;
+        self.screen = Screen::Login;
+        self.notice = "вы вышли".to_string();
     }
 
     fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
@@ -160,6 +242,7 @@ impl App {
                 self.token = Some(session.token);
                 self.account = Some(session.account);
                 self.password.clear();
+                self.save_session();
                 if let Err(error) = self.load_campaigns() {
                     self.error = error;
                 }
@@ -334,6 +417,21 @@ impl App {
                 self.open_scene(scene);
             }
         }
+        if let Some(campaign) = &self.campaign {
+            if campaign.role == "owner" || campaign.role == "master" {
+                ui.separator();
+                ui.heading("Импорт карты");
+                ui.label("картинка");
+                ui.text_edit_singleline(&mut self.image_path);
+                ui.label("annotation.json");
+                ui.text_edit_singleline(&mut self.annotation_path);
+                ui.label("имя сцены");
+                ui.text_edit_singleline(&mut self.scene_name);
+                if ui.button("Импортировать").clicked() {
+                    self.import_scene();
+                }
+            }
+        }
     }
 }
 
@@ -467,23 +565,120 @@ impl App {
     }
 }
 
+fn multipart_body(image: &[u8], annotation: &[u8], name: &str) -> (Vec<u8>, String) {
+    let boundary = "----vtt-boundary-7f3a9c";
+    let mut body = Vec::new();
+    let mut field = |name: &str, filename: &str, content_type: &str, data: &[u8]| {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"").as_bytes(),
+        );
+        if !filename.is_empty() {
+            body.extend_from_slice(format!("; filename=\"{filename}\"").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n");
+        if !content_type.is_empty() {
+            body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    };
+    field("image", "map.png", "application/octet-stream", image);
+    field(
+        "annotation",
+        "annotation.json",
+        "application/json",
+        annotation,
+    );
+    field("name", "", "", name.as_bytes());
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (body, format!("multipart/form-data; boundary={boundary}"))
+}
+
+impl App {
+    fn post_multipart(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: String,
+    ) -> Result<Value, String> {
+        let token = self.token.as_deref().unwrap_or("");
+        ureq::post(&format!("{}{}", self.base_url, path))
+            .set("Authorization", &format!("Bearer {token}"))
+            .set("Content-Type", &content_type)
+            .send_bytes(&body)
+            .map_err(format_error)?
+            .into_json::<Value>()
+            .map_err(|error| error.to_string())
+    }
+
+    fn import_scene(&mut self) {
+        let campaign = match &self.campaign {
+            Some(campaign) => campaign.clone(),
+            None => return,
+        };
+        let image = match fs::read(self.image_path.trim()) {
+            Ok(data) => data,
+            Err(error) => {
+                self.error = format!("картинка: {error}");
+                return;
+            }
+        };
+        let annotation = match fs::read(self.annotation_path.trim()) {
+            Ok(data) => data,
+            Err(error) => {
+                self.error = format!("разметка: {error}");
+                return;
+            }
+        };
+        let name = if self.scene_name.trim().is_empty() {
+            "Сцена".to_string()
+        } else {
+            self.scene_name.clone()
+        };
+        let (body, content_type) = multipart_body(&image, &annotation, &name);
+        match self.post_multipart(
+            &format!("/v1/campaigns/{}/scenes:import", campaign.id),
+            body,
+            content_type,
+        ) {
+            Ok(_) => {
+                self.notice = "карта импортирована".to_string();
+                self.open_campaign(campaign);
+            }
+            Err(error) => self.error = error,
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.make_texture(&ctx);
+        let account_login = self.account.as_ref().map(|account| account.login.clone());
+        let base_url = self.base_url.clone();
+        let logged = self.token.is_some();
+        let mut logout = false;
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("VTT");
-                if let Some(account) = &self.account {
+                if let Some(login) = &account_login {
                     ui.separator();
-                    ui.label(&account.login);
+                    ui.label(login);
                 }
-                if !self.base_url.is_empty() {
+                if !base_url.is_empty() {
                     ui.separator();
-                    ui.label(&self.base_url);
+                    ui.label(&base_url);
+                }
+                if logged && ui.button("Выйти").clicked() {
+                    logout = true;
                 }
             });
         });
+        if logout {
+            self.logout();
+        }
         if !self.error.is_empty() && self.screen != Screen::Login {
             egui::Panel::bottom("error").show(ui, |ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, &self.error);
@@ -542,5 +737,23 @@ fn main() {
     ) {
         eprintln!("client: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multipart_has_both_files_and_name() {
+        let (body, content_type) = multipart_body(b"image-bytes", b"{\"x\":1}", "Пещера");
+        assert!(content_type.starts_with("multipart/form-data; boundary="));
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("name=\"image\""));
+        assert!(text.contains("name=\"annotation\""));
+        assert!(text.contains("name=\"name\""));
+        assert!(text.contains("Пещера"));
+        assert!(text.contains("image-bytes"));
+        assert!(text.ends_with("--\r\n"));
     }
 }
