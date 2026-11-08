@@ -975,6 +975,27 @@ func (d *DB) SetTurn(campaignID, sceneID, tokenID string, round int) bool {
 	return err == nil
 }
 
+// ResetCombat убирает текущий ход; при clearInitiative обнуляет инициативу
+// всем фишкам сцены.
+func (d *DB) ResetCombat(campaignID, sceneID string, clearInitiative bool) bool {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM scene_turns WHERE campaign_id = ? AND scene_id = ?`,
+		campaignID, sceneID); err != nil {
+		return false
+	}
+	if clearInitiative {
+		if _, err := tx.Exec(`UPDATE tokens SET initiative = 0
+			WHERE campaign_id = ? AND scene_id = ?`, campaignID, sceneID); err != nil {
+			return false
+		}
+	}
+	return tx.Commit() == nil
+}
+
 func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 	rows, err := d.db.Query(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
 		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),

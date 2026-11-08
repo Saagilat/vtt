@@ -167,6 +167,7 @@ type Content interface {
 	SetSceneLight(campaignID, sceneID, light string) bool
 	Turn(campaignID, sceneID string) (tokenID string, round int)
 	SetTurn(campaignID, sceneID, tokenID string, round int) bool
+	ResetCombat(campaignID, sceneID string, clearInitiative bool) bool
 	AddChatMessage(campaignID, accountID, toAccountID, text, channel string) (ChatMessage, bool)
 	ChatMessages(campaignID string, limit int) []ChatMessage
 	Characters(campaignID string) []Character

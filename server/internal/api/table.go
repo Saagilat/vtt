@@ -54,29 +54,30 @@ var tableUpgrader = websocket.Upgrader{
 }
 
 type tableMessage struct {
-	Type        string  `json:"type"`
-	Text        string  `json:"text,omitempty"`
-	Channel     string  `json:"channel,omitempty"`
-	To          string  `json:"to,omitempty"`
-	IntentID    string  `json:"intent_id,omitempty"`
-	TokenID     string  `json:"token_id,omitempty"`
-	SceneID     string  `json:"scene_id,omitempty"`
-	DoorID      string  `json:"door_id,omitempty"`
-	Name        string  `json:"name,omitempty"`
-	OwnerID     string  `json:"owner_id,omitempty"`
-	CharacterID *string `json:"character_id,omitempty"`
-	AccountID   string  `json:"account_id,omitempty"`
-	Open        bool    `json:"open,omitempty"`
-	Start       bool    `json:"start,omitempty"`
-	X           float64 `json:"x,omitempty"`
-	Y           float64 `json:"y,omitempty"`
-	HP          *int    `json:"hp,omitempty"`
-	HPMax       *int    `json:"hp_max,omitempty"`
-	Initiative  *int    `json:"initiative,omitempty"`
-	Darkvision  *int    `json:"darkvision_ft,omitempty"`
-	Formula     string  `json:"formula,omitempty"`
-	Visibility  string  `json:"visibility,omitempty"`
-	Light       string  `json:"light,omitempty"`
+	Type            string  `json:"type"`
+	Text            string  `json:"text,omitempty"`
+	Channel         string  `json:"channel,omitempty"`
+	To              string  `json:"to,omitempty"`
+	IntentID        string  `json:"intent_id,omitempty"`
+	TokenID         string  `json:"token_id,omitempty"`
+	SceneID         string  `json:"scene_id,omitempty"`
+	DoorID          string  `json:"door_id,omitempty"`
+	Name            string  `json:"name,omitempty"`
+	OwnerID         string  `json:"owner_id,omitempty"`
+	CharacterID     *string `json:"character_id,omitempty"`
+	AccountID       string  `json:"account_id,omitempty"`
+	Open            bool    `json:"open,omitempty"`
+	Start           bool    `json:"start,omitempty"`
+	ClearInitiative bool    `json:"clear_initiative,omitempty"`
+	X               float64 `json:"x,omitempty"`
+	Y               float64 `json:"y,omitempty"`
+	HP              *int    `json:"hp,omitempty"`
+	HPMax           *int    `json:"hp_max,omitempty"`
+	Initiative      *int    `json:"initiative,omitempty"`
+	Darkvision      *int    `json:"darkvision_ft,omitempty"`
+	Formula         string  `json:"formula,omitempty"`
+	Visibility      string  `json:"visibility,omitempty"`
+	Light           string  `json:"light,omitempty"`
 }
 
 func (r *tableRoom) send(conn *websocket.Conn, value any) error {
@@ -385,7 +386,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move", "token.update", "initiative.roll", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light", "initiative.roll_all")
+		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light", "initiative.roll_all", "combat.reset")
 	}
 	turnToken, turnRound := s.content.Turn(campaign.ID, sceneID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
@@ -855,6 +856,32 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token_id": tokens[next].ID,
 				"round":    round,
 				"actor":    account,
+			})
+		case "combat.reset":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "боем управляет мастер"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			if !s.content.ResetCombat(campaign.ID, current, message.ClearInitiative) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "conflict", "message": "бой не сбросился"},
+				})
+				continue
+			}
+			room.broadcast(map[string]any{
+				"type":               "combat.reset",
+				"seq":                room.nextSeq(),
+				"time":               s.now().UTC().Format(time.RFC3339),
+				"tokens":             s.content.Tokens(campaign.ID, current),
+				"initiative_cleared": message.ClearInitiative,
+				"actor":              account,
 			})
 		case "token.place":
 			current := room.currentScene()

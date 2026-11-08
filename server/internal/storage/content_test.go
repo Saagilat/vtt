@@ -496,6 +496,38 @@ func TestTableChat(t *testing.T) {
 	if turnID != bestID {
 		t.Fatalf("первым ходит не лучший: turn=%q best=%q", turnID, bestID)
 	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "combat.reset", "intent_id": "i2g",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("combat.reset: %v", err)
+	}
+	if reply["type"] != "combat.reset" || reply["initiative_cleared"] != false {
+		t.Fatalf("сброс боя: %+v", reply)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "combat.reset", "clear_initiative": true, "intent_id": "i2h",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("combat.reset clear: %v", err)
+	}
+	if reply["type"] != "combat.reset" || reply["initiative_cleared"] != true {
+		t.Fatalf("сброс инициативы: %+v", reply)
+	}
+	resetTokens, ok := reply["tokens"].([]any)
+	if !ok || len(resetTokens) != 2 {
+		t.Fatalf("фишки после сброса: %+v", reply["tokens"])
+	}
+	for _, item := range resetTokens {
+		token, _ := item.(map[string]any)
+		if token["initiative"] != float64(0) {
+			t.Fatalf("инициатива не обнулилась: %+v", token)
+		}
+	}
 
 	if err := conn.WriteJSON(map[string]any{
 		"type": "scene.show", "scene_id": scene2.ID, "intent_id": "i4",

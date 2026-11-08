@@ -157,6 +157,7 @@ enum ChatEvent {
     TokenMoved(Token),
     TokenUpdated(Token),
     InitiativeRolled(Token, String, i64),
+    CombatReset(Vec<Token>, bool),
     CharacterChanged(Character),
     NoteChanged(Note),
     NoteRemoved(String),
@@ -241,6 +242,86 @@ fn query_encode(value: &str) -> String {
         }
     }
     out
+}
+
+fn highlight_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let lower = text.to_lowercase();
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(position) = lower[from..].find(&query) {
+        let start = from + position;
+        let end = start + query.len();
+        if text.is_char_boundary(start) && text.is_char_boundary(end) {
+            ranges.push((start, end));
+        }
+        from = end.max(start + 1);
+        if from >= lower.len() {
+            break;
+        }
+    }
+    ranges
+}
+
+fn search_highlight(text: &str, query: &str, size: f32) -> egui::text::LayoutJob {
+    let base = egui::TextFormat {
+        font_id: egui::FontId::proportional(size),
+        color: WARM_TEXT,
+        ..Default::default()
+    };
+    let mut hit = base.clone();
+    hit.background = WARM_ACCENT_DARK;
+    let mut job = egui::text::LayoutJob::default();
+    let mut position = 0;
+    for (start, end) in highlight_ranges(text, query) {
+        if start > position {
+            job.append(&text[position..start], 0.0, base.clone());
+        }
+        job.append(&text[start..end], 0.0, hit.clone());
+        position = end;
+    }
+    if position < text.len() {
+        job.append(&text[position..], 0.0, base);
+    }
+    job
+}
+
+fn search_snippet(text: &str, query: &str, before: usize, after: usize) -> String {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return String::new();
+    }
+    let lower = text.to_lowercase();
+    let Some(index) = lower.find(&query) else {
+        return String::new();
+    };
+    let index = if text.is_char_boundary(index) {
+        index
+    } else {
+        0
+    };
+    let start = text[..index]
+        .char_indices()
+        .rev()
+        .nth(before)
+        .map(|(position, _)| position)
+        .unwrap_or(0);
+    let end = text[index..]
+        .char_indices()
+        .nth(after)
+        .map(|(position, _)| index + position)
+        .unwrap_or(text.len());
+    let mut snippet = text[start..end].replace(['\n', '\r'], " ");
+    if start > 0 {
+        snippet.insert(0, '…');
+    }
+    if end < text.len() {
+        snippet.push('…');
+    }
+    snippet
 }
 
 fn sheet_flag(data: &Value, section: &str, key: &str) -> bool {
@@ -2828,6 +2909,22 @@ impl App {
                                         .send(ChatEvent::InitiativeRolled(token, formula, total));
                                 }
                             }
+                            Some("combat.reset") => {
+                                let tokens: Vec<Token> = value["tokens"]
+                                    .as_array()
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter_map(|item| {
+                                                serde_json::from_value(item.clone()).ok()
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let cleared =
+                                    value["initiative_cleared"].as_bool().unwrap_or(false);
+                                let _ = sender.send(ChatEvent::CombatReset(tokens, cleared));
+                            }
                             Some("character.changed") => {
                                 if let Ok(character) =
                                     serde_json::from_value::<Character>(value["character"].clone())
@@ -2958,6 +3055,20 @@ impl App {
                     }
                     self.chat_lines
                         .push(format!("инициатива {name}: {total} ({formula})"));
+                }
+                ChatEvent::CombatReset(tokens, cleared) => {
+                    let scene_id = self.current_scene_id();
+                    self.tokens = tokens
+                        .into_iter()
+                        .filter(|token| token.scene_id == scene_id)
+                        .collect();
+                    self.turn_token = None;
+                    self.round = 0;
+                    self.chat_lines.push(if cleared {
+                        "бой сброшен, инициатива обнулена".to_string()
+                    } else {
+                        "бой сброшен".to_string()
+                    });
                 }
                 ChatEvent::CharacterChanged(character) => {
                     let (hp, hp_max) = character_hp(&character);
@@ -3162,6 +3273,13 @@ impl App {
             payload["start"] = Value::Bool(true);
         }
         self.send_intent(payload);
+    }
+
+    fn reset_combat(&mut self, clear_initiative: bool) {
+        self.send_intent(serde_json::json!({
+            "type": "combat.reset",
+            "clear_initiative": clear_initiative,
+        }));
     }
 
     fn link_token(&mut self, token_id: &str, character_id: &str) {
@@ -3799,7 +3917,16 @@ impl App {
                     for note in &notes {
                         let selected = self.selected_note.as_deref() == Some(note.id.as_str());
                         ui.horizontal(|ui| {
-                            if ui.selectable_label(selected, &note.title).clicked() {
+                            if selected {
+                                ui.strong("▸");
+                            }
+                            let title = search_highlight(&note.title, &self.note_query, 15.0);
+                            let response = ui.add(
+                                egui::Label::new(title)
+                                    .selectable(false)
+                                    .sense(egui::Sense::click()),
+                            );
+                            if response.clicked() {
                                 self.select_note(&note.id);
                             }
                             ui.weak(&note.author_login);
@@ -3807,6 +3934,19 @@ impl App {
                                 ui.weak("личная");
                             }
                         });
+                        if !self.note_query.trim().is_empty() {
+                            let snippet = search_snippet(&note.body, &self.note_query, 28, 90);
+                            if !snippet.is_empty() {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(18.0);
+                                    ui.add(egui::Label::new(search_highlight(
+                                        &snippet,
+                                        &self.note_query,
+                                        13.0,
+                                    )));
+                                });
+                            }
+                        }
                     }
                 });
             ui.separator();
@@ -4006,6 +4146,18 @@ impl App {
                 {
                     self.roll_all_initiative(true);
                 }
+                egui::CollapsingHeader::new("Настройки боя").show(ui, |ui| {
+                    if ui.button("Сбросить бой").clicked() {
+                        self.reset_combat(false);
+                    }
+                    if ui
+                        .button("Сбросить бой и инициативу")
+                        .on_hover_text("обнулить инициативу всех фишек сцены")
+                        .clicked()
+                    {
+                        self.reset_combat(true);
+                    }
+                });
                 let label = if self.round == 0 {
                     "Начать бой"
                 } else {
@@ -4213,6 +4365,24 @@ mod tests {
         assert_eq!(token.hp_max, 10);
         assert_eq!(token.initiative, 0);
         assert!(token.owner_login.is_empty());
+    }
+
+    #[test]
+    fn search_highlight_finds_cyrillic() {
+        let ranges = highlight_ranges("Дракон и дракон", "ДРАКОН");
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(&"Дракон и дракон"[ranges[0].0..ranges[0].1], "Дракон");
+        assert_eq!(&"Дракон и дракон"[ranges[1].0..ranges[1].1], "дракон");
+        assert!(highlight_ranges("нет совпадений", "дракон").is_empty());
+        let snippet = search_snippet(
+            "В горах живёт старый дракон и охраняет клад.",
+            "дракон",
+            10,
+            12,
+        );
+        assert!(snippet.contains("дракон"));
+        assert!(snippet.starts_with('…'));
+        assert!(snippet.ends_with('…'));
     }
 
     #[test]
