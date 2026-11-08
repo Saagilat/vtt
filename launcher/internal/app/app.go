@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/Saagilat/vtt/launcher/internal/fetch"
 	"github.com/Saagilat/vtt/launcher/internal/launch"
@@ -48,6 +49,8 @@ type Config struct {
 	Downloader fetch.Downloader
 	// ClientName — как называется программа клиента в каталоге версии.
 	ClientName string
+	// Platform — для какой платформы берём записи манифеста. Пусто — эта машина.
+	Platform manifest.Platform
 }
 
 type runner struct {
@@ -71,6 +74,9 @@ func Run(ctx context.Context, cfg Config) int {
 	}
 	if r.cfg.ClientName == "" {
 		r.cfg.ClientName = manifest.NameClient
+	}
+	if r.cfg.Platform.OS == "" {
+		r.cfg.Platform = manifest.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH}
 	}
 	// `--check` ничего не меняет: даже пустой каталог установки не создаётся.
 	open := store.Open
@@ -106,8 +112,14 @@ func (r *runner) update(ctx context.Context) int {
 		r.sayf("манифест недоступен: %v", err)
 		return r.launchInstalled(ctx)
 	}
+	client, err := m.ClientFor(r.cfg.Platform)
+	if err != nil {
+		// В релизе нет сборки для этой системы — играем тем, что стоит.
+		r.sayf("%v", err)
+		return r.launchInstalled(ctx)
+	}
 	src := netSource{dl: r.dl, base: fetch.BaseURL(r.cfg.ManifestURL), dir: r.st.TmpDir()}
-	if code := r.apply(ctx, m, src); code != ExitOK {
+	if code := r.apply(ctx, m, src, client); code != ExitOK {
 		return code
 	}
 	return r.launchInstalled(ctx)
@@ -125,18 +137,22 @@ func (r *runner) install(ctx context.Context) int {
 		r.sayf("установка из файла: %v", err)
 		return ExitDelivery
 	}
+	client, err := m.ClientFor(r.cfg.Platform)
+	if err != nil {
+		r.sayf("установка из файла: %v", err)
+		return ExitDelivery
+	}
 	src := dirSource{dir: srcDir}
-	if code := r.apply(ctx, m, src); code != ExitOK {
+	if code := r.apply(ctx, m, src, client); code != ExitOK {
 		return code
 	}
-	r.sayf("поставлено из %s: %s %s", src.dir, r.cfg.ClientName, m.Client().Version)
+	r.sayf("поставлено из %s: %s %s", src.dir, client.Name, client.Version)
 	return ExitOK
 }
 
 // apply приводит установку к манифесту. Обязательный пакет — client; необязательные
 // доставляются только по просьбе человека и только если клиент их поддерживает (D37).
-func (r *runner) apply(ctx context.Context, m *manifest.Manifest, src source) int {
-	client := m.Client()
+func (r *runner) apply(ctx context.Context, m *manifest.Manifest, src source, client manifest.Package) int {
 	if code := r.deliver(ctx, src, client, true); code != ExitOK {
 		return code
 	}
@@ -144,7 +160,7 @@ func (r *runner) apply(ctx context.Context, m *manifest.Manifest, src source) in
 		if name == manifest.NameClient {
 			continue
 		}
-		p, ok := m.Find(name)
+		p, ok := m.Find(name, r.cfg.Platform)
 		if !ok {
 			r.sayf("%s: в релизе %s такого пакета нет — пропускаю", name, m.Release)
 			continue
@@ -222,7 +238,7 @@ func (r *runner) reportUnrequested(m *manifest.Manifest) {
 		if name == manifest.NameClient {
 			continue
 		}
-		p, ok := m.Find(name)
+		p, ok := m.Find(name, r.cfg.Platform)
 		if !ok || p.Version == inst.Version || r.requested(name) {
 			continue
 		}

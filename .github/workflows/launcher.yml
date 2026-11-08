@@ -1,6 +1,6 @@
 name: launcher
 
-# CI по путям (docs/07-projects.md, §3, правило 4): правка в launcher/ запускает только его.
+# CI по путям (docs/projects.md, правило 4): правка в launcher/ запускает только его.
 on:
   push:
     paths:
@@ -22,7 +22,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: launcher/go.mod
-          cache: false  # зависимостей нет — кешировать нечего
+      - name: Окно требует GL и X11 — заголовки для cgo
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
       - name: Форматирование — gofmt не находит, что менять
         run: |
           unformatted="$(gofmt -l .)"
@@ -33,11 +34,18 @@ jobs:
           fi
       - name: Разбор — go vet
         run: go vet ./...
-      - name: Тесты
+      - name: Тесты — движок без окна, окно только собирается
         run: go test ./...
-      - name: Сборка релизного бинаря (D41) — windows/amd64 без cgo
+      - name: Сборка под Linux — cgo, окно
+        run: >-
+          CGO_ENABLED=1 go build -trimpath
+          -ldflags "-X main.version=${GITHUB_REF_NAME}"
+          -o vtt-launcher ./cmd/vtt-launcher
+      - name: Мингер для кросс-сборки под Windows
+        run: sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Сборка под Windows — cgo и mingw
         run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
-            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc \
+            go build -trimpath -ldflags "-X main.version=${GITHUB_REF_NAME}" \
             -o vtt-launcher.exe ./cmd/vtt-launcher
           ls -l vtt-launcher.exe

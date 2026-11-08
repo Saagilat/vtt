@@ -45,8 +45,12 @@ func (r *runner) check(ctx context.Context) int {
 		r.sayf("манифест недоступен (%v) — версии только по установке", err)
 		return ExitOK
 	}
-	r.sayf("в релизе %s:", m.Release)
-	for _, p := range m.Packages {
+	if _, err := m.ClientFor(r.cfg.Platform); err != nil {
+		r.sayf("%v", err)
+		return ExitOK
+	}
+	r.sayf("в релизе %s для %s:", m.Release, r.cfg.Platform)
+	for _, p := range m.ForPlatform(r.cfg.Platform) {
 		have := state.Packages[p.Name].Version
 		switch {
 		case have == "":

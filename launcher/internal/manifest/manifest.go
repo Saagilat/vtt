@@ -1,8 +1,8 @@
 // Package manifest читает latest.json — контракт между релизом и лаунчером (MANIFEST.md).
 //
-// Разбор строгий намеренно: незнакомое поле, незнакомое имя пакета или две записи с одним
-// именем — ошибка, а не «ладно, пропустим». Тишина не должна быть согласием, иначе подмена
-// манифеста проходит молча (MANIFEST.md, правило 2).
+// Разбор строгий намеренно: незнакомое поле, незнакомое имя пакета, платформа не из закрытого
+// списка или две записи с одним именем и платформой — ошибка, а не "ладно, пропустим".
+// Тишина не должна быть согласием, иначе подмена манифеста проходит молча.
 package manifest
 
 import (
@@ -17,22 +17,43 @@ import (
 )
 
 // Format — версия формата манифеста, которую понимает этот код.
-const Format = 1
+const Format = 2
 
-// Имена пакетов. Список закрытый: `client` обязателен, остальные ставятся действием человека.
+// Имена пакетов. Список закрытый: client обязателен, остальные ставятся действием человека.
 const (
 	NameClient    = "client"
 	NameVoice     = "voice"
 	NameAnnotator = "annotator"
 )
 
+// Платформы и архитектуры — закрытые списки. Новое значение (arm64, darwin) — новая версия
+// формата, а не догадка: неизвестное значение здесь ошибка разбора.
+const (
+	OSWindows = "windows"
+	OSLinux   = "linux"
+	ArchAMD64 = "amd64"
+)
+
 // ErrUnknownFormat — манифест новее, чем понимает лаунчер. Не ошибка поставки: с таким
 // манифестом лаунчер продолжает работать с тем, что установлено (MANIFEST.md, правило 3).
 var ErrUnknownFormat = errors.New("незнакомая версия формата манифеста")
 
+// Platform — платформа сборки: ось и архитектура.
+type Platform struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
+}
+
+// String — windows/amd64: так платформа называется в тексте и в списке platforms.
+func (p Platform) String() string {
+	return p.OS + "/" + p.Arch
+}
+
 // Package — одна запись из packages.
 type Package struct {
 	Name      string `json:"name"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
 	Version   string `json:"version"`
 	File      string `json:"file"`
 	SHA256    string `json:"sha256"`
@@ -40,11 +61,17 @@ type Package struct {
 	MinClient string `json:"min_client,omitempty"`
 }
 
+// Platform записи: та же пара, что в полях os и arch.
+func (p Package) Platform() Platform {
+	return Platform{OS: p.OS, Arch: p.Arch}
+}
+
 // Manifest — разобранный latest.json.
 type Manifest struct {
-	Format   int       `json:"manifest"`
-	Release  string    `json:"release"`
-	Packages []Package `json:"packages"`
+	Format    int        `json:"manifest"`
+	Release   string     `json:"release"`
+	Platforms []Platform `json:"platforms"`
+	Packages  []Package  `json:"packages"`
 }
 
 // Parse разбирает и проверяет latest.json целиком: либо манифест, которому можно верить,
@@ -73,6 +100,10 @@ func (m *Manifest) Validate() error {
 	if !semver.Valid(m.Release) {
 		return fmt.Errorf("latest.json: release: %q — не версия вида 1.4.0", m.Release)
 	}
+	declared, err := m.checkPlatforms()
+	if err != nil {
+		return err
+	}
 	if len(m.Packages) == 0 {
 		return errors.New("latest.json: packages: пусто, а client обязателен")
 	}
@@ -85,10 +116,18 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%s: name: незнакомый пакет %q (бывают %s, %s, %s)",
 				where, p.Name, NameClient, NameVoice, NameAnnotator)
 		}
-		if seen[p.Name] {
-			return fmt.Errorf("%s: name: пакет %q встречается дважды", where, p.Name)
+		platform := p.Platform()
+		if err := checkPlatform(platform); err != nil {
+			return fmt.Errorf("%s (%s): %w", where, p.Name, err)
 		}
-		seen[p.Name] = true
+		if !declared[platform] {
+			return fmt.Errorf("%s (%s): %s нет в platforms", where, p.Name, platform)
+		}
+		key := p.Name + "@" + platform.String()
+		if seen[key] {
+			return fmt.Errorf("%s: name: пакет %q для %s встречается дважды", where, p.Name, platform)
+		}
+		seen[key] = true
 		if !semver.Valid(p.Version) {
 			return fmt.Errorf("%s (%s): version: %q — не версия вида 1.4.0", where, p.Name, p.Version)
 		}
@@ -105,38 +144,72 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%s (%s): min_client: %q — не версия вида 1.4.0", where, p.Name, p.MinClient)
 		}
 	}
-	if !seen[NameClient] {
-		return errors.New("latest.json: packages: нет client, а поставка без него пустая")
+	return m.checkClients()
+}
+
+// checkPlatforms разбирает объявленный состав релиза и возвращает множество платформ.
+func (m *Manifest) checkPlatforms() (map[Platform]bool, error) {
+	if len(m.Platforms) == 0 {
+		return nil, errors.New("latest.json: platforms: пусто, а платформы обязательны")
+	}
+	declared := make(map[Platform]bool, len(m.Platforms))
+	for i, platform := range m.Platforms {
+		if err := checkPlatform(platform); err != nil {
+			return nil, fmt.Errorf("latest.json: platforms[%d]: %w", i, err)
+		}
+		if declared[platform] {
+			return nil, fmt.Errorf("latest.json: platforms[%d]: %s встречается дважды", i, platform)
+		}
+		declared[platform] = true
+	}
+	return declared, nil
+}
+
+// checkClients: на каждой объявленной платформе клиент ровно один — иначе поставка пустая
+// или неоднозначная, и человек с такой платформой не знает, что получит.
+func (m *Manifest) checkClients() error {
+	for _, platform := range m.Platforms {
+		count := 0
+		for _, p := range m.Packages {
+			if p.Name == NameClient && p.Platform() == platform {
+				count++
+			}
+		}
+		if count == 0 {
+			return fmt.Errorf("latest.json: platforms: для %s нет client", platform)
+		}
 	}
 	return nil
 }
 
-// Client возвращает обязательный пакет. Вызывать после Parse: он гарантирует, что client есть.
-func (m *Manifest) Client() Package {
-	p, ok := m.Find(NameClient)
-	if !ok {
-		panic("manifest: client отсутствует, манифест не прошёл Parse/Validate")
+// ClientFor возвращает обязательный пакет для платформы. Ошибка — это факт о релизе,
+// а не поломка манифеста: сборки для этой системы в нём просто нет.
+func (m *Manifest) ClientFor(target Platform) (Package, error) {
+	if p, ok := m.Find(NameClient, target); ok {
+		return p, nil
 	}
-	return p
+	return Package{}, fmt.Errorf("в релизе %s нет сборки для %s", m.Release, target)
 }
 
-// Find ищет пакет по имени.
-func (m *Manifest) Find(name string) (Package, bool) {
+// Find ищет пакет по имени и платформе.
+func (m *Manifest) Find(name string, target Platform) (Package, bool) {
 	for _, p := range m.Packages {
-		if p.Name == name {
+		if p.Name == name && p.Platform() == target {
 			return p, true
 		}
 	}
 	return Package{}, false
 }
 
-// Names возвращает имена пакетов в порядке манифеста.
-func (m *Manifest) Names() []string {
-	names := make([]string, 0, len(m.Packages))
+// ForPlatform — записи для одной платформы в порядке манифеста.
+func (m *Manifest) ForPlatform(target Platform) []Package {
+	out := make([]Package, 0, len(m.Packages))
 	for _, p := range m.Packages {
-		names = append(names, p.Name)
+		if p.Platform() == target {
+			out = append(out, p)
+		}
 	}
-	return names
+	return out
 }
 
 func knownPackage(name string) bool {
@@ -148,8 +221,18 @@ func knownPackage(name string) bool {
 	}
 }
 
+func checkPlatform(p Platform) error {
+	if p.OS != OSWindows && p.OS != OSLinux {
+		return fmt.Errorf("os: незнакомая платформа %q (бывают %s, %s)", p.OS, OSWindows, OSLinux)
+	}
+	if p.Arch != ArchAMD64 {
+		return fmt.Errorf("arch: незнакомая архитектура %q (бывает %s)", p.Arch, ArchAMD64)
+	}
+	return nil
+}
+
 // checkFileName: file — имя файла в том же релизе, а не адрес. Манифест не должен уметь
-// уводить лаунчер на чужой хостинг или за пределы каталога установки (MANIFEST.md).
+// уводить лаунчер на чужой хостинг или за пределы каталога установки.
 func checkFileName(file string) error {
 	switch {
 	case file == "":
@@ -159,13 +242,17 @@ func checkFileName(file string) error {
 	case file == "." || file == "..":
 		return fmt.Errorf("%q — не имя файла", file)
 	case !strings.HasPrefix(file, "vtt-"):
-		return fmt.Errorf("%q: имя начинается с vtt- (D41)", file)
+		return fmt.Errorf("%q: имя начинается с vtt-", file)
 	}
 	switch {
 	case strings.HasSuffix(file, ".zip"), strings.HasSuffix(file, ".exe"):
 		return nil
+	case strings.HasSuffix(file, ".tar.gz"), strings.HasSuffix(file, ".tgz"):
+		return nil
+	case strings.HasSuffix(file, ".deb"):
+		return nil
 	default:
-		return fmt.Errorf("%q: ожидается .zip или .exe", file)
+		return fmt.Errorf("%q: ожидается .zip, .exe, .tar.gz или .deb", file)
 	}
 }
 

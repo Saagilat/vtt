@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Saagilat/vtt/launcher/internal/manifest"
 )
 
 type zipItem struct {
@@ -45,7 +47,7 @@ func writeReleaseDir(t *testing.T, dir, releaseVersion string, specs ...pkgSpec)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := buildManifest(t, 1, releaseVersion, specs...)
+	body, _ := buildManifest(t, manifest.Format, releaseVersion, specs...)
 	for _, s := range specs {
 		if err := os.WriteFile(filepath.Join(dir, s.file), s.payload, 0o644); err != nil {
 			t.Fatal(err)

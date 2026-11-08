@@ -18,12 +18,23 @@ import (
 	"github.com/Saagilat/vtt/launcher/internal/app"
 	"github.com/Saagilat/vtt/launcher/internal/fetch"
 	"github.com/Saagilat/vtt/launcher/internal/manifest"
+	"github.com/Saagilat/vtt/launcher/internal/ui"
 )
 
 // version подставляется сборкой: -ldflags "-X main.version=v0.1.0".
 var version = "dev"
 
 func main() {
+	// Без аргументов — окно: так человек запускает ярлык. С аргументами — консоль:
+	// флаги остаются для диагностики и приёмки клиента.
+	if len(os.Args) == 1 {
+		dir, err := resolveInstallDir("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vtt-launcher: %v\n", err)
+			os.Exit(app.ExitDelivery)
+		}
+		os.Exit(ui.Run(dir))
+	}
 	os.Exit(run(os.Args[1:]))
 }
 
@@ -61,16 +72,10 @@ func run(args []string) int {
 		return app.ExitOK
 	}
 
-	dir := *installDir
-	if dir == "" {
-		// Лаунчер живёт рядом с клиентом в одном каталоге установки (D37): по умолчанию
-		// ставим туда, откуда его запустили.
-		exe, err := os.Executable()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "vtt-launcher: не понять, где я лежу: %v\n", err)
-			return app.ExitDelivery
-		}
-		dir = filepath.Dir(exe)
+	dir, err := resolveInstallDir(*installDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vtt-launcher: %v\n", err)
+		return app.ExitDelivery
 	}
 
 	requested, err := parsePackages(*packages)
@@ -113,4 +118,17 @@ func parsePackages(s string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// resolveInstallDir: каталог установки — флаг, а без него — рядом с лаунчером, откуда его запустили.
+// Лаунчер живёт вместе с клиентом в одном каталоге, поэтому по умолчанию берём свой.
+func resolveInstallDir(fromFlag string) (string, error) {
+	if fromFlag != "" {
+		return fromFlag, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("не понять, где я лежу: %w", err)
+	}
+	return filepath.Dir(exe), nil
 }

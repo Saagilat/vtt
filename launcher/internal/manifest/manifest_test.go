@@ -8,13 +8,27 @@ import (
 
 const sha = "9f2c4d0e1b7a9c55c40d81f2a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 
+var (
+	winAmd = Platform{OS: OSWindows, Arch: ArchAMD64}
+	linAmd = Platform{OS: OSLinux, Arch: ArchAMD64}
+)
+
 // good — манифест, который обязан проходить: тот же набор полей, что в примере MANIFEST.md.
 const good = `{
-  "manifest": 1,
+  "manifest": 2,
   "release": "1.4.0",
+  "platforms": [
+    {"os": "windows", "arch": "amd64"},
+    {"os": "linux", "arch": "amd64"}
+  ],
   "packages": [
-    {"name": "client", "version": "1.4.0", "file": "vtt-client-1.4.0-win64.zip", "sha256": "` + sha + `", "size": 41234123},
-    {"name": "voice", "version": "0.3.1", "file": "vtt-voice-0.3.1-ru.zip", "sha256": "` + sha + `", "size": 81234567, "min_client": "1.4.0"}
+    {"name": "client", "os": "windows", "arch": "amd64", "version": "1.4.0",
+     "file": "vtt-client-1.4.0-win64.zip", "sha256": "` + sha + `", "size": 41234123},
+    {"name": "client", "os": "linux", "arch": "amd64", "version": "1.4.0",
+     "file": "vtt-client-1.4.0-linux-amd64.tar.gz", "sha256": "` + sha + `", "size": 39123456},
+    {"name": "voice", "os": "windows", "arch": "amd64", "version": "0.3.1",
+     "file": "vtt-voice-0.3.1-ru.zip", "sha256": "` + sha + `", "size": 81234567,
+     "min_client": "1.4.0"}
   ]
 }`
 
@@ -26,14 +40,32 @@ func TestParseGood(t *testing.T) {
 	if m.Release != "1.4.0" || m.Format != Format {
 		t.Fatalf("разобрали не то: format=%d release=%q", m.Format, m.Release)
 	}
-	if got := m.Client(); got.Name != NameClient || got.Version != "1.4.0" {
-		t.Fatalf("Client() = %+v", got)
+	if len(m.Platforms) != 2 {
+		t.Fatalf("platforms = %v", m.Platforms)
 	}
-	if got, ok := m.Find(NameVoice); !ok || got.MinClient != "1.4.0" {
+	if got, err := m.ClientFor(winAmd); err != nil || got.File != "vtt-client-1.4.0-win64.zip" {
+		t.Fatalf("ClientFor(windows) = %+v, %v", got, err)
+	}
+	if got, err := m.ClientFor(linAmd); err != nil || got.File != "vtt-client-1.4.0-linux-amd64.tar.gz" {
+		t.Fatalf("ClientFor(linux) = %+v, %v", got, err)
+	}
+	if got, ok := m.Find(NameVoice, winAmd); !ok || got.MinClient != "1.4.0" {
 		t.Fatalf("Find(voice) = %+v, %v", got, ok)
 	}
-	if names := strings.Join(m.Names(), ","); names != "client,voice" {
-		t.Fatalf("Names() = %q", names)
+	if got := m.ForPlatform(linAmd); len(got) != 1 || got[0].Name != NameClient {
+		t.Fatalf("ForPlatform(linux) = %+v", got)
+	}
+}
+
+func TestClientForMissingPlatform(t *testing.T) {
+	// Релиз собран не для всех систем — это факт о релизе, а не поломка манифеста.
+	m, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ClientFor(Platform{OS: OSLinux, Arch: "arm64"}); err == nil ||
+		!strings.Contains(err.Error(), "нет сборки") {
+		t.Fatalf("ожидали ошибку нет сборки, получили %v", err)
 	}
 }
 
@@ -54,9 +86,45 @@ func TestParseRejects(t *testing.T) {
 			want: "незнакомый пакет",
 		},
 		{
-			name: "дубль пакета",
-			json: strings.Replace(good, `"name": "voice"`, `"name": "client"`, 1),
-			want: "дважды",
+			name: "дубль пакета на платформе",
+			json: strings.Replace(good, `{"name": "client", "os": "linux", "arch": "amd64"`, `{"name": "client", "os": "windows", "arch": "amd64"`, 1),
+			want: "встречается дважды",
+		},
+		{
+			name: "платформа не из списка",
+			json: strings.Replace(good, `{"os": "linux", "arch": "amd64"}`, `{"os": "darwin", "arch": "amd64"}`, 1),
+			want: "незнакомая платформа",
+		},
+		{
+			name: "архитектура не из списка",
+			json: strings.Replace(good, `{"os": "linux", "arch": "amd64"}`, `{"os": "linux", "arch": "arm64"}`, 1),
+			want: "незнакомая архитектура",
+		},
+		{
+			name: "у записи нет os",
+			json: strings.Replace(good, `{"name": "client", "os": "windows", "arch": "amd64"`, `{"name": "client", "arch": "amd64"`, 1),
+			want: "незнакомая платформа",
+		},
+		{
+			name: "пакета нет в platforms",
+			json: strings.Replace(good, `{"os": "windows", "arch": "amd64"},
+    {"os": "linux", "arch": "amd64"}`, `{"os": "windows", "arch": "amd64"}`, 1),
+			want: "нет в platforms",
+		},
+		{
+			name: "platforms пусто",
+			json: strings.Replace(good, `"platforms": [
+    {"os": "windows", "arch": "amd64"},
+    {"os": "linux", "arch": "amd64"}
+  ],`, `"platforms": [],`, 1),
+			want: "platforms: пусто",
+		},
+		{
+			name: "platforms дважды",
+			json: strings.Replace(good, `{"os": "linux", "arch": "amd64"}
+  ],`, `{"os": "windows", "arch": "amd64"}
+  ],`, 1),
+			want: "встречается дважды",
 		},
 		{
 			name: "хеш не hex",
@@ -89,6 +157,11 @@ func TestParseRejects(t *testing.T) {
 			want: "начинается с vtt-",
 		},
 		{
+			name: "file не архив",
+			json: strings.Replace(good, `vtt-client-1.4.0-win64.zip`, `vtt-client-1.4.0-win64.bin`, 1),
+			want: "ожидается",
+		},
+		{
 			name: "release не версия",
 			json: strings.Replace(good, `"release": "1.4.0"`, `"release": "1.4"`, 1),
 			want: "release",
@@ -100,7 +173,7 @@ func TestParseRejects(t *testing.T) {
 		},
 		{
 			name: "лишние данные после объекта",
-			json: good + `{"manifest": 1}`,
+			json: good + `{"manifest": 2}`,
 			want: "лишние данные",
 		},
 		{
@@ -122,10 +195,12 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
-func TestParseRejectsOneClient(t *testing.T) {
+func TestParseRejectsNoClient(t *testing.T) {
 	// Поставка без client пустая: правильное сообщение именно про его отсутствие.
-	only := `{"manifest": 1, "release": "1.4.0", "packages": [
-		{"name": "voice", "version": "0.3.1", "file": "vtt-voice-0.3.1-ru.zip", "sha256": "` + sha + `", "size": 1}]}`
+	only := `{"manifest": 2, "release": "1.4.0",
+		"platforms": [{"os": "windows", "arch": "amd64"}],
+		"packages": [{"name": "voice", "os": "windows", "arch": "amd64", "version": "0.3.1",
+		"file": "vtt-voice-0.3.1-ru.zip", "sha256": "` + sha + `", "size": 1}]}`
 	if _, err := Parse([]byte(only)); err == nil || !strings.Contains(err.Error(), "нет client") {
 		t.Fatalf("ожидали ошибку про отсутствие client, получили %v", err)
 	}
@@ -133,8 +208,8 @@ func TestParseRejectsOneClient(t *testing.T) {
 
 func TestUnknownFormatIsRecognisable(t *testing.T) {
 	// Незнакомая версия формата — не ошибка поставки: лаунчер должен уметь отличить её
-	// от «манифест битый» и продолжить работать с установленным (MANIFEST.md, правило 3).
-	bumped := strings.Replace(good, `"manifest": 1`, `"manifest": 2`, 1)
+	// от "манифест битый" и продолжить работать с установленным (MANIFEST.md, правило 3).
+	bumped := strings.Replace(good, `"manifest": 2`, `"manifest": 3`, 1)
 	_, err := Parse([]byte(bumped))
 	if !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("ожидали ErrUnknownFormat, получили %v", err)
@@ -142,7 +217,8 @@ func TestUnknownFormatIsRecognisable(t *testing.T) {
 }
 
 func TestParseRejectsEmptyPackages(t *testing.T) {
-	empty := `{"manifest": 1, "release": "1.4.0", "packages": []}`
+	empty := `{"manifest": 2, "release": "1.4.0",
+		"platforms": [{"os": "windows", "arch": "amd64"}], "packages": []}`
 	_, err := Parse([]byte(empty))
 	if err == nil || !strings.Contains(err.Error(), "пусто") {
 		t.Fatalf("ожидали ошибку про пустой список, получили %v", err)

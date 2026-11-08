@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/Saagilat/vtt/launcher/internal/manifest"
 	"github.com/Saagilat/vtt/launcher/internal/store"
 )
 
@@ -81,7 +83,7 @@ func TestUnknownManifestFormatLaunchesInstalled(t *testing.T) {
 	}
 
 	// Манифест новее формата: не применяем, работаем с установленным (правило 3).
-	cfg, out = baseConfig(t, dir, publishWithFormat(t, 2, "1.4.0", clientSpec(t, "1.4.0")))
+	cfg, out = baseConfig(t, dir, publishWithFormat(t, 3, "1.4.0", clientSpec(t, "1.4.0")))
 	if code := Run(context.Background(), cfg); code != ExitOK {
 		t.Fatalf("незнакомый формат: код %d, ожидали %d\n%s", code, ExitOK, out)
 	}
@@ -189,5 +191,31 @@ func TestInstallFromMissingDirectory(t *testing.T) {
 	cfg.Source = filepath.Join(t.TempDir(), "нет-такого")
 	if code := Run(context.Background(), cfg); code != ExitDelivery {
 		t.Fatalf("код %d, ожидали %d\n%s", code, ExitDelivery, out)
+	}
+}
+
+func TestRunNoBuildForPlatformLaunchesInstalled(t *testing.T) {
+	// Релиз собран не для этой системы: обновлять нечем, но играть можно тем, что стоит.
+	dir := t.TempDir()
+	cfg, out := baseConfig(t, dir, publish(t, "1.4.0", clientSpec(t, "1.4.0")))
+	if code := Run(context.Background(), cfg); code != ExitOK {
+		t.Fatalf("установка: код %d\n%s", code, out)
+	}
+
+	foreign := clientSpec(t, "1.5.0")
+	if runtime.GOOS == "windows" {
+		foreign.platform = manifest.Platform{OS: manifest.OSLinux, Arch: manifest.ArchAMD64}
+	} else {
+		foreign.platform = manifest.Platform{OS: manifest.OSWindows, Arch: manifest.ArchAMD64}
+	}
+	cfg, out = baseConfig(t, dir, publish(t, "1.5.0", foreign))
+	if code := Run(context.Background(), cfg); code != ExitOK {
+		t.Fatalf("чужая платформа: код %d, ожидали %d\n%s", code, ExitOK, out)
+	}
+	if !strings.Contains(out.String(), "нет сборки") {
+		t.Fatalf("не сказали, что сборки для этой системы нет:\n%s", out)
+	}
+	if _, err := os.Stat(markerPath(t)); err != nil {
+		t.Fatalf("установленный клиент не запущен: %v\n%s", err, out)
 	}
 }

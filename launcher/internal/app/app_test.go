@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Saagilat/vtt/launcher/internal/fetch"
+	"github.com/Saagilat/vtt/launcher/internal/manifest"
 )
 
 // Клиент в тестах — сам тестовый бинарь: так проверяется настоящий запуск процесса,
@@ -53,6 +54,12 @@ func helperClient() int {
 	return 0
 }
 
+// hostPlatform — платформа этих тестов: записи по умолчанию делаются для неё, чтобы
+// обычные сценарии не зависели от того, где гоняют тесты.
+func hostPlatform() manifest.Platform {
+	return manifest.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH}
+}
+
 func clientEntryName() string {
 	if runtime.GOOS == "windows" {
 		return "client.exe"
@@ -67,12 +74,16 @@ type pkgSpec struct {
 	file      string
 	payload   []byte
 	minClient string
+	// platform — для какой системы запись; пусто — эта машина.
+	platform manifest.Platform
 	// serve — что сервер отдаст вместо payload: так проверяется несовпавший хеш.
 	serve []byte
 }
 
 type jsonPkg struct {
 	Name      string `json:"name"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
 	Version   string `json:"version"`
 	File      string `json:"file"`
 	SHA256    string `json:"sha256"`
@@ -81,9 +92,10 @@ type jsonPkg struct {
 }
 
 type jsonManifest struct {
-	Format   int       `json:"manifest"`
-	Release  string    `json:"release"`
-	Packages []jsonPkg `json:"packages"`
+	Format    int                 `json:"manifest"`
+	Release   string              `json:"release"`
+	Platforms []manifest.Platform `json:"platforms"`
+	Packages  []jsonPkg           `json:"packages"`
 }
 
 func sha256hex(b []byte) string {
@@ -95,14 +107,24 @@ func buildManifest(t *testing.T, format int, releaseVersion string, specs ...pkg
 	t.Helper()
 	doc := jsonManifest{Format: format, Release: releaseVersion}
 	files := map[string][]byte{}
+	declared := map[manifest.Platform]bool{}
 	for _, s := range specs {
+		platform := s.platform
+		if platform.OS == "" {
+			platform = hostPlatform()
+		}
+		if !declared[platform] {
+			declared[platform] = true
+			doc.Platforms = append(doc.Platforms, platform)
+		}
 		served := s.payload
 		if s.serve != nil {
 			served = s.serve
 		}
 		files[s.file] = served
 		doc.Packages = append(doc.Packages, jsonPkg{
-			Name: s.name, Version: s.version, File: s.file,
+			Name: s.name, OS: platform.OS, Arch: platform.Arch,
+			Version: s.version, File: s.file,
 			SHA256: sha256hex(s.payload), Size: int64(len(s.payload)), MinClient: s.minClient,
 		})
 	}
@@ -131,7 +153,7 @@ func offline() releaseEnv {
 // с тестами ведёт себя петлевое соединение на мегабайтах.
 func publish(t *testing.T, releaseVersion string, specs ...pkgSpec) releaseEnv {
 	t.Helper()
-	body, files := buildManifest(t, 1, releaseVersion, specs...)
+	body, files := buildManifest(t, manifest.Format, releaseVersion, specs...)
 	return publishRaw(t, body, files)
 }
 
