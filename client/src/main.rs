@@ -371,6 +371,7 @@ impl App {
         self.texture = None;
         self.pending_image = None;
         self.invite_code.clear();
+        self.token_owner.clear();
         match self.get_json::<CampaignDetail>(&format!("/v1/campaigns/{}", campaign.id)) {
             Ok(detail) => self.campaign_detail = Some(detail),
             Err(error) => self.error = error,
