@@ -517,14 +517,19 @@ func TestTablePlayerTokenRollAndTurn(t *testing.T) {
 		return conn
 	}
 	read := func(conn *websocket.Conn, kind string) map[string]any {
-		var reply map[string]any
-		if err := conn.ReadJSON(&reply); err != nil {
-			t.Fatalf("%s: %v", kind, err)
+		for {
+			var reply map[string]any
+			if err := conn.ReadJSON(&reply); err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+			if reply["type"] == "visibility" {
+				continue
+			}
+			if reply["type"] != kind {
+				t.Fatalf("%s: получили %+v", kind, reply)
+			}
+			return reply
 		}
-		if reply["type"] != kind {
-			t.Fatalf("%s: получили %+v", kind, reply)
-		}
-		return reply
 	}
 
 	master := dial(alice)

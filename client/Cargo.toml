@@ -10,6 +10,7 @@ name = "client"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 eframe = "0.37"
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

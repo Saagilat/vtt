@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use base64::Engine;
 use eframe::egui;
 use image::ImageEncoder;
 use serde::de::DeserializeOwned;
@@ -92,6 +93,12 @@ struct SessionFile {
     token: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct VisibilityMask {
+    blocks: u32,
+    visible: String,
+}
+
 enum ChatEvent {
     Connected,
     Message(String),
@@ -102,6 +109,7 @@ enum ChatEvent {
     SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
     Doors(HashMap<String, bool>),
     DoorSet(String, bool),
+    Visibility(VisibilityMask),
     Roll(String),
     Turn(Option<String>, u32),
     Error(String),
@@ -195,6 +203,9 @@ struct App {
     token_name: String,
     token_owner: String,
     roll_formula: String,
+    visibility: Option<VisibilityMask>,
+    pending_visibility: Option<VisibilityMask>,
+    fog_texture: Option<egui::TextureHandle>,
     turn_token: Option<String>,
     round: u32,
     panel_tab: PanelTab,
@@ -246,6 +257,9 @@ impl App {
             token_name: "Фишка".to_string(),
             token_owner: String::new(),
             roll_formula: "1d20".to_string(),
+            visibility: None,
+            pending_visibility: None,
+            fog_texture: None,
             turn_token: None,
             round: 0,
             panel_tab: PanelTab::Chat,
@@ -587,6 +601,44 @@ impl App {
             .read_to_end(&mut data)
             .map_err(|error| error.to_string())?;
         Ok(data)
+    }
+
+    fn make_fog_texture(&mut self, ctx: &egui::Context) {
+        let mask = match self.pending_visibility.take() {
+            Some(mask) => mask,
+            None => return,
+        };
+        let blocks = mask.blocks as usize;
+        if blocks == 0 {
+            return;
+        }
+        let data = match base64::engine::general_purpose::STANDARD.decode(&mask.visible) {
+            Ok(data) => data,
+            Err(error) => {
+                self.error = format!("маска видимости: {error}");
+                return;
+            }
+        };
+        if data.len() * 8 < blocks * blocks {
+            self.error = "маска видимости короче карты".to_string();
+            return;
+        }
+        let mut rgba = image::RgbaImage::new(blocks as u32, blocks as u32);
+        for y in 0..blocks {
+            for x in 0..blocks {
+                let bit = y * blocks + x;
+                let visible = data[bit / 8] & (1 << (bit % 8)) != 0;
+                let pixel = if visible {
+                    image::Rgba([0, 0, 0, 0])
+                } else {
+                    image::Rgba([25, 18, 13, 238])
+                };
+                rgba.put_pixel(x as u32, y as u32, pixel);
+            }
+        }
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        self.fog_texture = Some(ctx.load_texture("fog", color, egui::TextureOptions::LINEAR));
     }
 
     fn make_texture(&mut self, ctx: &egui::Context) {
@@ -1089,6 +1141,16 @@ impl App {
                 egui::Color32::WHITE,
             );
         }
+        if !self.is_master() {
+            if let Some(fog) = &self.fog_texture {
+                painter.image(
+                    fog.id(),
+                    map_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
     }
 }
 
@@ -1467,6 +1529,9 @@ impl App {
         self.doors.clear();
         self.turn_token = None;
         self.round = 0;
+        self.visibility = None;
+        self.pending_visibility = None;
+        self.fog_texture = None;
         self.drag_token = None;
         self.chat_status = "подключение…".to_string();
         let (token, url) = match (&self.token, self.ws_url(campaign_id, scene_id)) {
@@ -1528,6 +1593,11 @@ impl App {
                                         .map(str::to_string);
                                     let round = turn["round"].as_u64().unwrap_or(0) as u32;
                                     let _ = sender.send(ChatEvent::Turn(token_id, round));
+                                }
+                                if let Ok(mask) = serde_json::from_value::<VisibilityMask>(
+                                    value["state"]["visibility"].clone(),
+                                ) {
+                                    let _ = sender.send(ChatEvent::Visibility(mask));
                                 }
                             }
                             Some("chat.said") => {
@@ -1621,6 +1691,13 @@ impl App {
                                         sender.send(ChatEvent::DoorSet(door_id.to_string(), open));
                                 }
                             }
+                            Some("visibility") => {
+                                if let Ok(mask) =
+                                    serde_json::from_value::<VisibilityMask>(value["mask"].clone())
+                                {
+                                    let _ = sender.send(ChatEvent::Visibility(mask));
+                                }
+                            }
                             Some("error") => {
                                 let message =
                                     value["error"]["message"].as_str().unwrap_or("ошибка");
@@ -1692,6 +1769,10 @@ impl App {
                     }
                 }
                 ChatEvent::Doors(doors) => self.doors = doors,
+                ChatEvent::Visibility(mask) => {
+                    self.visibility = Some(mask.clone());
+                    self.pending_visibility = Some(mask);
+                }
                 ChatEvent::DoorSet(id, open) => {
                     self.doors.insert(id, open);
                 }
@@ -2062,6 +2143,7 @@ impl eframe::App for App {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         self.accept_dropped_files(&ctx);
         self.make_texture(&ctx);
+        self.make_fog_texture(&ctx);
         self.poll_chat();
         let account_login = self.account.as_ref().map(|account| account.login.clone());
         let role_label = self

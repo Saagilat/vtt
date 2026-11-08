@@ -97,6 +97,47 @@ func (r *tableRoom) broadcastIf(value any, allow func(tableClient) bool) {
 	}
 }
 
+type tableClientConn struct {
+	conn *websocket.Conn
+	who  tableClient
+}
+
+func (r *tableRoom) snapshot() []tableClientConn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]tableClientConn, 0, len(r.clients))
+	for conn, who := range r.clients {
+		out = append(out, tableClientConn{conn: conn, who: who})
+	}
+	return out
+}
+
+// sendVisibility пересчитывает маску каждому игроку отдельно: у него своя фишка
+// и свой туман. Мастеру маска не нужна — он видит геометрию целиком.
+func (s *server) sendVisibility(room *tableRoom, campaignID, sceneID string) {
+	if sceneID == "" {
+		return
+	}
+	scene, ok := s.content.Scene(campaignID, sceneID)
+	if !ok {
+		return
+	}
+	tokens := s.content.Tokens(campaignID, sceneID)
+	doors := s.content.Doors(campaignID, sceneID)
+	for _, client := range room.snapshot() {
+		if master(client.who.role) {
+			continue
+		}
+		mask := visibilityFor(scene, doors, tokens, client.who.account.ID)
+		_ = room.send(client.conn, map[string]any{
+			"type": "visibility",
+			"seq":  room.nextSeq(),
+			"time": s.now().UTC().Format(time.RFC3339),
+			"mask": mask,
+		})
+	}
+}
+
 func (r *tableRoom) nextSeq() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -172,6 +213,14 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	if sceneID != "" {
 		tokens = s.content.Tokens(campaign.ID, sceneID)
 	}
+	doors := s.content.Doors(campaign.ID, sceneID)
+	var visibility any
+	if !master(campaign.Role) && sceneID != "" {
+		if scene, ok := s.content.Scene(campaign.ID, sceneID); ok {
+			mask := visibilityFor(scene, doors, tokens, account.ID)
+			visibility = mask
+		}
+	}
 	actions := []string{"chat.say", "token.move", "token.update", "roll"}
 	if master(campaign.Role) {
 		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next")
@@ -194,11 +243,12 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 			"campaign": map[string]string{"id": campaign.ID, "name": campaign.Name},
 			"scene_id": sceneID,
 			"tokens":   tokens,
-			"doors":    s.content.Doors(campaign.ID, sceneID),
+			"doors":    doors,
 			"turn": map[string]any{
 				"token_id": turnToken,
 				"round":    turnRound,
 			},
+			"visibility": visibility,
 		},
 		"actions": actions,
 	}
@@ -329,6 +379,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"turn":   map[string]any{"token_id": "", "round": 0},
 				"actor":  account,
 			})
+			s.sendVisibility(room, campaign.ID, shown.ID)
 		case "door.set":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{
@@ -364,6 +415,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"open":    message.Open,
 				"actor":   account,
 			})
+			s.sendVisibility(room, campaign.ID, current)
 		case "turn.next":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{
@@ -457,6 +509,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token": token,
 				"actor": account,
 			})
+			s.sendVisibility(room, campaign.ID, current)
 		case "token.move":
 			current := room.currentScene()
 			token, ok := s.content.Token(campaign.ID, current, message.TokenID)
@@ -500,6 +553,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token": moved,
 				"actor": account,
 			})
+			s.sendVisibility(room, campaign.ID, current)
 		case "token.update":
 			current := room.currentScene()
 			token, ok := s.content.Token(campaign.ID, current, message.TokenID)
