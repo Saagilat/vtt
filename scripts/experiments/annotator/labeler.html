@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Разметка карты — annotator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #15171c; color: #e6e8ee;
+         display: flex; height: 100vh; overflow: hidden; }
+  #stage { flex: 1; position: relative; overflow: hidden; background: #0d0f13; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #panel { width: 300px; padding: 14px; overflow-y: auto; background: #1c1f26;
+           border-left: 1px solid #2b303b; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #8e97a8;
+       margin: 16px 0 6px; }
+  button, select, input { font: inherit; color: inherit; background: #262b35;
+       border: 1px solid #3a414f; border-radius: 6px; padding: 5px 8px; }
+  button { cursor: pointer; }
+  button:hover { background: #303747; }
+  button.active { background: #3d6bff; border-color: #3d6bff; color: #fff; }
+  button.primary { background: #2f7d4f; border-color: #2f7d4f; }
+  button.danger { background: #5a2a2a; border-color: #5a2a2a; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .row > * { flex: 1; }
+  label { color: #b9c0ce; font-size: 12px; display: block; margin: 4px 0 2px; }
+  input[type=number] { width: 100%; }
+  #status { font-size: 12px; color: #9aa4b6; min-height: 32px; white-space: pre-wrap;
+            border-top: 1px solid #2b303b; padding-top: 8px; }
+  #counts { font-size: 12px; color: #9aa4b6; }
+  .hint { font-size: 11px; color: #7f8899; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="canvas"></canvas></div>
+<aside id="panel">
+  <h1>Разметка карты</h1>
+  <div id="counts">стены: 0 · двери: 0 · области: 0</div>
+  <div class="hint">ЛКМ — точка, Enter — закончить, Esc — отменить, колесо — зум,
+    средняя/правая кнопка — сдвиг.</div>
+
+  <h2>Режим</h2>
+  <div class="row">
+    <button id="mode-wall" class="active">Стены</button>
+    <button id="mode-door">Двери</button>
+  </div>
+  <div class="row">
+    <button id="mode-area">Области</button>
+    <button id="mode-grid">Сетка</button>
+  </div>
+
+  <h2>Действия</h2>
+  <div class="row">
+    <button id="finish">Закончить</button>
+    <button id="undo-point">Убрать точку</button>
+  </div>
+  <div class="row">
+    <button id="undo-object" class="danger">Убрать объект</button>
+    <button id="clear" class="danger">Очистить всё</button>
+  </div>
+
+  <h2>Дверь</h2>
+  <label>Тип</label>
+  <select id="door-type">
+    <option value="normal">обычная</option>
+    <option value="secret">секретная</option>
+    <option value="opening">проём</option>
+    <option value="unknown">неизвестно</option>
+  </select>
+
+  <h2>Область</h2>
+  <label>Тип</label>
+  <select id="area-type">
+    <option value="water">вода</option>
+    <option value="lava">лава</option>
+    <option value="difficult">трудный рельеф</option>
+    <option value="unknown">неизвестно</option>
+  </select>
+
+  <h2>Сетка</h2>
+  <label>Режим</label>
+  <select id="grid-mode">
+    <option value="none">нет</option>
+    <option value="square">квадрат</option>
+    <option value="hex">гексы</option>
+  </select>
+  <div id="grid-square">
+    <label>Сторона, px</label>
+    <input id="grid-side" type="number" min="1" step="0.1" value="70">
+    <label>Центр клетки (0,0): x, y</label>
+    <div class="row">
+      <input id="grid-origin-x" type="number" step="1" value="35">
+      <input id="grid-origin-y" type="number" step="1" value="35">
+    </div>
+  </div>
+  <div id="grid-hex" style="display:none">
+    <label>Радиус, px</label>
+    <input id="grid-radius" type="number" min="1" step="0.1" value="40">
+    <label>Ориентация</label>
+    <select id="grid-orientation"><option value="pointy">pointy</option>
+      <option value="flat">flat</option></select>
+    <label>Сдвиг</label>
+    <select id="grid-stagger"><option value="odd">odd</option>
+      <option value="even">even</option></select>
+  </div>
+
+  <h2>Файл</h2>
+  <div class="row"><button id="save" class="primary">Сохранить</button></div>
+  <div id="status">загрузка…</div>
+</aside>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusBox = document.getElementById('status');
+const countsBox = document.getElementById('counts');
+
+let image = null;
+let meta = null;
+let view = { scale: 1, ox: 0, oy: 0 };
+let pan = { active: false, x: 0, y: 0 };
+let state = {
+  mode: 'wall',
+  walls: [],
+  doors: [],
+  areas: [],
+  grid: { mode: 'none' },
+  currentWall: null,
+  currentArea: null,
+  doorStart: null,
+};
+
+function say(text) { statusBox.textContent = text; }
+
+function updateCounts() {
+  countsBox.textContent = 'стены: ' + state.walls.length
+    + ' · двери: ' + state.doors.length
+    + ' · области: ' + state.areas.length;
+}
+
+function resize() {
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  render();
+}
+
+function fit() {
+  if (!image) return;
+  const sx = canvas.width / image.width;
+  const sy = canvas.height / image.height;
+  view.scale = Math.min(sx, sy) * 0.98;
+  view.ox = (canvas.width - image.width * view.scale) / 2;
+  view.oy = (canvas.height - image.height * view.scale) / 2;
+}
+
+function toImage(event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((event.clientX - rect.left - view.ox) / view.scale),
+    y: Math.round((event.clientY - rect.top - view.oy) / view.scale),
+  };
+}
+
+function gridSquare(value) {
+  return value && value.mode === 'square' && value.square && value.square.side_px > 0;
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!image) return;
+  ctx.save();
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.scale, view.scale);
+  ctx.drawImage(image, 0, 0);
+
+  if (gridSquare(state.grid)) {
+    const side = state.grid.square.side_px;
+    const ox = state.grid.origin[0] - side / 2;
+    const oy = state.grid.origin[1] - side / 2;
+    ctx.strokeStyle = 'rgba(255, 80, 80, 0.55)';
+    ctx.lineWidth = 1 / view.scale;
+    for (let x = ox; x < image.width; x += side) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, image.height); ctx.stroke();
+    }
+    for (let y = oy; y < image.height; y += side) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(image.width, y); ctx.stroke();
+    }
+  }
+
+  for (const area of state.areas) {
+    if (area.polygon.length < 3) continue;
+    ctx.beginPath();
+    ctx.moveTo(area.polygon[0][0], area.polygon[0][1]);
+    for (const point of area.polygon.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(60, 120, 220, 0.18)';
+    ctx.strokeStyle = 'rgba(80, 150, 255, 0.9)';
+    ctx.lineWidth = 2 / view.scale;
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = 'rgba(255, 200, 0, 0.95)';
+  ctx.lineWidth = 3 / view.scale;
+  for (const wall of state.walls) {
+    ctx.beginPath();
+    ctx.moveTo(wall.points[0][0], wall.points[0][1]);
+    for (const point of wall.points.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.stroke();
+  }
+
+  if (state.currentWall && state.currentWall.points.length) {
+    const points = state.currentWall.points;
+    ctx.strokeStyle = 'rgba(255, 240, 120, 1)';
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.stroke();
+    for (const point of points) {
+      ctx.beginPath();
+      ctx.arc(point[0], point[1], 4 / view.scale, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffe878';
+      ctx.fill();
+    }
+  }
+
+  if (state.currentArea && state.currentArea.points.length) {
+    const points = state.currentArea.points;
+    ctx.strokeStyle = 'rgba(120, 190, 255, 1)';
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = 'rgba(80, 220, 120, 1)';
+  ctx.lineWidth = 4 / view.scale;
+  for (const door of state.doors) {
+    ctx.beginPath();
+    ctx.moveTo(door.from[0], door.from[1]);
+    ctx.lineTo(door.to[0], door.to[1]);
+    ctx.stroke();
+  }
+  if (state.doorStart) {
+    ctx.beginPath();
+    ctx.arc(state.doorStart[0], state.doorStart[1], 5 / view.scale, 0, Math.PI * 2);
+    ctx.fillStyle = '#50dc78';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  state.currentWall = null;
+  state.currentArea = null;
+  state.doorStart = null;
+  for (const name of ['wall', 'door', 'area', 'grid']) {
+    document.getElementById('mode-' + name).classList.toggle('active', name === mode);
+  }
+  render();
+}
+
+
+canvas.addEventListener('mousedown', (event) => {
+  if (event.button === 1 || event.button === 2) {
+    pan.active = true;
+    pan.x = event.clientX;
+    pan.y = event.clientY;
+    event.preventDefault();
+    return;
+  }
+  if (event.button !== 0) return;
+  const point = toImage(event);
+  if (point.x < 0 || point.y < 0 || point.x >= image.width || point.y >= image.height) return;
+
+  if (state.mode === 'wall') {
+    if (!state.currentWall) state.currentWall = { points: [] };
+    state.currentWall.points.push([point.x, point.y]);
+  } else if (state.mode === 'door') {
+    if (!state.doorStart) {
+      state.doorStart = [point.x, point.y];
+    } else {
+      state.doors.push({
+        id: 'd' + (state.doors.length + 1),
+        from: state.doorStart,
+        to: [point.x, point.y],
+        type: document.getElementById('door-type').value,
+      });
+      state.doorStart = null;
+    }
+  } else if (state.mode === 'area') {
+    if (!state.currentArea) state.currentArea = { points: [] };
+    state.currentArea.points.push([point.x, point.y]);
+  } else if (state.mode === 'grid') {
+    state.grid.origin = [point.x, point.y];
+    document.getElementById('grid-origin-x').value = point.x;
+    document.getElementById('grid-origin-y').value = point.y;
+    say('origin сетки: ' + point.x + ', ' + point.y);
+  }
+  updateCounts();
+  render();
+});
+
+canvas.addEventListener('mousemove', (event) => {
+  if (!pan.active) return;
+  view.ox += event.clientX - pan.x;
+  view.oy += event.clientY - pan.y;
+  pan.x = event.clientX;
+  pan.y = event.clientY;
+  render();
+});
+
+window.addEventListener('mouseup', () => { pan.active = false; });
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+canvas.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = event.clientX - rect.left;
+  const my = event.clientY - rect.top;
+  const before = { x: (mx - view.ox) / view.scale, y: (my - view.oy) / view.scale };
+  view.scale *= event.deltaY < 0 ? 1.15 : 1 / 1.15;
+  view.ox = mx - before.x * view.scale;
+  view.oy = my - before.y * view.scale;
+  render();
+}, { passive: false });
+
+function finish() {
+  if (state.mode === 'wall' && state.currentWall && state.currentWall.points.length >= 2) {
+    state.walls.push({ id: 'w' + (state.walls.length + 1), points: state.currentWall.points });
+    state.currentWall = null;
+  } else if (state.mode === 'area' && state.currentArea && state.currentArea.points.length >= 3) {
+    const polygon = state.currentArea.points.slice();
+    polygon.push(polygon[0].slice());
+    state.areas.push({
+      id: 'a' + (state.areas.length + 1),
+      type: document.getElementById('area-type').value,
+      polygon,
+    });
+    state.currentArea = null;
+  }
+  updateCounts();
+  render();
+}
+
+function undoPoint() {
+  if (state.currentWall && state.currentWall.points.length) state.currentWall.points.pop();
+  if (state.currentArea && state.currentArea.points.length) state.currentArea.points.pop();
+  render();
+}
+
+function undoObject() {
+  if (state.doors.length) state.doors.pop();
+  else if (state.areas.length) state.areas.pop();
+  else if (state.walls.length) state.walls.pop();
+  updateCounts();
+  render();
+}
+
+function clearAll() {
+  if (!confirm('Убрать всю разметку?')) return;
+  state.walls = []; state.doors = []; state.areas = [];
+  state.currentWall = null; state.currentArea = null; state.doorStart = null;
+  updateCounts();
+  render();
+}
+
+
+function readGrid() {
+  const mode = document.getElementById('grid-mode').value;
+  if (mode === 'square') {
+    return {
+      mode: 'square',
+      origin: [Number(document.getElementById('grid-origin-x').value) || 0,
+               Number(document.getElementById('grid-origin-y').value) || 0],
+      square: { side_px: Number(document.getElementById('grid-side').value) || 70 },
+    };
+  }
+  if (mode === 'hex') {
+    return {
+      mode: 'hex',
+      origin: [Number(document.getElementById('grid-origin-x').value) || 0,
+               Number(document.getElementById('grid-origin-y').value) || 0],
+      hex: {
+        radius_px: Number(document.getElementById('grid-radius').value) || 40,
+        orientation: document.getElementById('grid-orientation').value,
+        stagger: document.getElementById('grid-stagger').value,
+      },
+    };
+  }
+  return { mode: 'none' };
+}
+
+function applyGrid(value) {
+  const mode = value && value.mode ? value.mode : 'none';
+  document.getElementById('grid-mode').value = mode;
+  document.getElementById('grid-square').style.display = mode === 'square' ? '' : 'none';
+  document.getElementById('grid-hex').style.display = mode === 'hex' ? '' : 'none';
+  if (value && value.origin) {
+    document.getElementById('grid-origin-x').value = value.origin[0];
+    document.getElementById('grid-origin-y').value = value.origin[1];
+  }
+  if (value && value.square) {
+    document.getElementById('grid-side').value = value.square.side_px;
+  }
+  if (value && value.hex) {
+    document.getElementById('grid-radius').value = value.hex.radius_px;
+    document.getElementById('grid-orientation').value = value.hex.orientation;
+    document.getElementById('grid-stagger').value = value.hex.stagger;
+  }
+}
+
+async function save() {
+  finish();
+  const document_ = {
+    format_version: 1,
+    image: { width: image.width, height: image.height },
+    grid: readGrid(),
+    walls: state.walls,
+    doors: state.doors,
+    areas: state.areas,
+  };
+  const response = await fetch('/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(document_),
+  });
+  const result = await response.json();
+  say(result.verdict === 'ok'
+    ? 'сохранено: ' + result.message
+    : 'не сохранено: ' + result.code + ' — ' + result.message);
+}
+
+async function boot() {
+  meta = await (await fetch('/meta')).json();
+  image = new Image();
+  image.src = '/image';
+  await image.decode();
+  resize();
+  fit();
+  const existing = await (await fetch('/annotation')).json();
+  if (existing) {
+    state.walls = existing.walls || [];
+    state.doors = existing.doors || [];
+    state.areas = existing.areas || [];
+    state.grid = existing.grid || { mode: 'none' };
+    say('загружена разметка: ' + state.walls.length + ' стен');
+  } else {
+    state.grid = meta.grid || { mode: 'none' };
+    say('карта ' + image.width + '×' + image.height + '; сетка: ' + state.grid.mode);
+  }
+  applyGrid(state.grid);
+  updateCounts();
+  render();
+}
+
+for (const name of ['wall', 'door', 'area', 'grid']) {
+  document.getElementById('mode-' + name).addEventListener('click', () => setMode(name));
+}
+document.getElementById('finish').addEventListener('click', finish);
+document.getElementById('undo-point').addEventListener('click', undoPoint);
+document.getElementById('undo-object').addEventListener('click', undoObject);
+document.getElementById('clear').addEventListener('click', clearAll);
+document.getElementById('save').addEventListener('click', save);
+document.getElementById('grid-mode').addEventListener('change', () => {
+  applyGrid({ mode: document.getElementById('grid-mode').value });
+  render();
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { finish(); event.preventDefault(); }
+  if (event.key === 'Escape') {
+    state.currentWall = null; state.currentArea = null; state.doorStart = null; render();
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    undoObject(); event.preventDefault();
+  }
+});
+window.addEventListener('resize', () => { resize(); });
+
+boot().catch((error) => say('ошибка: ' + error));
+</script>
+</body>
+</html>
+
