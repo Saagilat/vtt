@@ -195,7 +195,7 @@ DELETE /v1/sessions/current → 204, тела нет
 > **Что уже работает.** `hello` несёт аккаунт, роль, кампанию, `scene_id`, фишки,
 > состояние дверей и текущий ход (`turn.token_id`, `turn.round`) сцены (сцена выбирается
 > параметром `?scene_id=`, иначе берётся активная). Фишка несёт `owner_id`, `owner_login`,
-> `hp`, `hp_max` и `initiative`. `actions` содержит `chat.say`, `token.move`,
+> `hp`, `hp_max`, `initiative` и `darkvision_ft`. `actions` содержит `chat.say`, `token.move`,
 > `token.update` и `roll`, а для мастера ещё `token.place`, `scene.show`, `door.set`
 > и `turn.next`. Сервер принимает эти намерения; `scene.show` сохраняет активную сцену,
 > сбрасывает ход и рассылает `scene.shown` с фишками и дверями новой сцены.
@@ -207,6 +207,8 @@ DELETE /v1/sessions/current → 204, тела нет
 > `visibility` — маску 256×256 из `hello` и после движения фишки, двери или смены сцены;
 > считается объединение лучей от его фишек, закрытые двери и стены перекрывают взгляд.
 > Бит маски — `x + y*256`, младший бит первым; `1` — видно, `0` — туман.
+> На свету стены ограничивают взгляд, но не дальность; в темноте дальность равна
+> `darkvision_ft` фишки, пересчитанной через сетку (по умолчанию 5 футов на клетку).
 > Мастеру маска не нужна: он видит геометрию целиком. Для проверки он может
 > прислать `visibility.peek` с `account_id` и получить ту же маску с `as_account` —
 > режим «глазами игрока»; пустой `account_id` выключает режим. Вместо `path` у `token.move`
@@ -219,11 +221,12 @@ DELETE /v1/sessions/current → 204, тела нет
 |---|---|---|
 | `token.move` | `token_id`, `x`, `y` | игрок — своим, мастер — любым |
 | `token.place` | `name`, `owner_id`, `x`, `y` | только мастер: стены не проверяются |
-| `token.update` | `token_id`, `hp`, `hp_max`, `initiative` | владелец фишки, мастер |
+| `token.update` | `token_id`, `hp`, `hp_max`, `initiative`, `darkvision_ft` | владелец фишки, мастер |
 | `door.set` | `door_id`, `open` | мастер; игрок — дверь рядом |
 | `scene.show` | `scene_id` | мастер |
 | `turn.next` | — | мастер |
 | `visibility.peek` | `account_id` | мастер |
+| `scene.light` | `light` (`bright`/`dark`) | мастер |
 | `roll` | `formula`, `visibility` (`table`/`self`/`master`) | участник |
 | `chat.say` | `text`, `channel` (`table`/`master`/`whisper`), `to` | участник |
 | `sheet.change` | `character_id`, `changes` | владелец листа, мастер |

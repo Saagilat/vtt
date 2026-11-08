@@ -575,6 +575,20 @@ func (d *DB) SaveExploredMask(campaignID, sceneID, accountID string, data []byte
 	return err == nil
 }
 
+// SetSceneLight переключает освещённость сцены: bright или dark.
+func (d *DB) SetSceneLight(campaignID, sceneID, light string) bool {
+	if light != "bright" && light != "dark" {
+		return false
+	}
+	result, err := d.db.Exec(`UPDATE scenes SET light = ?
+		WHERE campaign_id = ? AND id = ?`, light, campaignID, sceneID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
+}
+
 func (d *DB) SetActiveScene(campaignID, sceneID string) bool {
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -625,7 +639,7 @@ func (d *DB) SetTurn(campaignID, tokenID string, round int) bool {
 func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 	rows, err := d.db.Query(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
 		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
-		t.hp_current, t.hp_max, t.initiative
+		t.hp_current, t.hp_max, t.initiative, t.darkvision_ft
 		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
 		WHERE t.campaign_id = ? AND t.scene_id = ? ORDER BY t.created_at, t.id`,
 		campaignID, sceneID)
@@ -638,7 +652,7 @@ func (d *DB) Tokens(campaignID, sceneID string) []api.Token {
 		var token api.Token
 		if err := rows.Scan(&token.ID, &token.SceneID, &token.Name,
 			&token.X, &token.Y, &token.Color, &token.OwnerID, &token.OwnerLogin,
-			&token.HP, &token.HPMax, &token.Initiative); err != nil {
+			&token.HP, &token.HPMax, &token.Initiative, &token.Darkvision); err != nil {
 			return nil
 		}
 		out = append(out, token)
@@ -651,13 +665,13 @@ func (d *DB) Token(campaignID, sceneID, tokenID string) (api.Token, bool) {
 	var token api.Token
 	err := d.db.QueryRow(`SELECT t.id, t.scene_id, t.name, t.x, t.y, t.color,
 		COALESCE(t.owner_id, ''), COALESCE(a.login, ''),
-		t.hp_current, t.hp_max, t.initiative
+		t.hp_current, t.hp_max, t.initiative, t.darkvision_ft
 		FROM tokens t LEFT JOIN accounts a ON a.id = t.owner_id
 		WHERE t.campaign_id = ? AND t.scene_id = ? AND t.id = ?`,
 		campaignID, sceneID, tokenID).
 		Scan(&token.ID, &token.SceneID, &token.Name, &token.X, &token.Y,
 			&token.Color, &token.OwnerID, &token.OwnerLogin,
-			&token.HP, &token.HPMax, &token.Initiative)
+			&token.HP, &token.HPMax, &token.Initiative, &token.Darkvision)
 	if err != nil {
 		return api.Token{}, false
 	}
@@ -699,7 +713,16 @@ func (d *DB) MoveToken(campaignID, sceneID, tokenID string, x, y float64) (api.T
 	return d.Token(campaignID, sceneID, tokenID)
 }
 
-// SetTokenStats сохраняет HP и инициативу; пределы проверяет вызывающий.
+// SetTokenDarkvision сохраняет дальность тёмного зрения в футах.
+func (d *DB) SetTokenDarkvision(campaignID, sceneID, tokenID string, darkvision int) (api.Token, bool) {
+	if _, err := d.db.Exec(`UPDATE tokens SET darkvision_ft = ?
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		darkvision, campaignID, sceneID, tokenID); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, tokenID)
+}
+
 func (d *DB) SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (api.Token, bool) {
 	if _, err := d.db.Exec(`UPDATE tokens SET hp_current = ?, hp_max = ?, initiative = ?
 		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,

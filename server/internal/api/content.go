@@ -91,6 +91,7 @@ type Token struct {
 	HP         int     `json:"hp"`
 	HPMax      int     `json:"hp_max"`
 	Initiative int     `json:"initiative"`
+	Darkvision int     `json:"darkvision_ft"`
 }
 
 // ErrInviteNotFound — кода нет.
@@ -118,11 +119,13 @@ type Content interface {
 	CreateToken(campaignID, sceneID, ownerID, name string, x, y float64) (Token, bool)
 	MoveToken(campaignID, sceneID, tokenID string, x, y float64) (Token, bool)
 	SetTokenStats(campaignID, sceneID, tokenID string, hp, hpMax, initiative int) (Token, bool)
+	SetTokenDarkvision(campaignID, sceneID, tokenID string, darkvision int) (Token, bool)
 	Doors(campaignID, sceneID string) map[string]bool
 	SetDoor(campaignID, sceneID, doorID string, open bool) bool
 	ExploredMask(campaignID, sceneID, accountID string) []byte
 	SaveExploredMask(campaignID, sceneID, accountID string, data []byte) bool
 	SetActiveScene(campaignID, sceneID string) bool
+	SetSceneLight(campaignID, sceneID, light string) bool
 	Turn(campaignID string) (tokenID string, round int)
 	SetTurn(campaignID, tokenID string, round int) bool
 }

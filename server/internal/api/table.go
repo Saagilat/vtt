@@ -69,8 +69,10 @@ type tableMessage struct {
 	HP         *int    `json:"hp,omitempty"`
 	HPMax      *int    `json:"hp_max,omitempty"`
 	Initiative *int    `json:"initiative,omitempty"`
+	Darkvision *int    `json:"darkvision_ft,omitempty"`
 	Formula    string  `json:"formula,omitempty"`
 	Visibility string  `json:"visibility,omitempty"`
+	Light      string  `json:"light,omitempty"`
 }
 
 func (r *tableRoom) send(conn *websocket.Conn, value any) error {
@@ -272,7 +274,7 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := []string{"chat.say", "token.move", "token.update", "roll"}
 	if master(campaign.Role) {
-		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek")
+		actions = append(actions, "token.place", "scene.show", "door.set", "turn.next", "visibility.peek", "scene.light")
 	}
 	turnToken, turnRound := s.content.Turn(campaign.ID)
 	conn, err := tableUpgrader.Upgrade(w, r, nil)
@@ -431,6 +433,34 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"mask":       mask,
 				"as_account": target,
 			})
+		case "scene.light":
+			if !master(campaign.Role) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "forbidden", "message": "светом управляет мастер"},
+				})
+				continue
+			}
+			if message.Light != "bright" && message.Light != "dark" {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "свет: bright или dark"},
+				})
+				continue
+			}
+			current := room.currentScene()
+			if !s.content.SetSceneLight(campaign.ID, current, message.Light) {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "not_found", "message": "свет не сохранился"},
+				})
+				continue
+			}
+			s.broadcastSceneChanged(campaign.ID, current, account)
+			s.sendVisibility(room, campaign.ID, current)
 		case "scene.show":
 			if !master(campaign.Role) {
 				_ = room.send(conn, map[string]any{
@@ -593,6 +623,19 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
+			if message.Darkvision != nil {
+				if *message.Darkvision < 0 || *message.Darkvision > 300 {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "bad_request", "message": "тёмное зрение от 0 до 300 футов"},
+					})
+					continue
+				}
+				if updated, ok := s.content.SetTokenDarkvision(campaign.ID, current, token.ID, *message.Darkvision); ok {
+					token = updated
+				}
+			}
 			room.broadcast(map[string]any{
 				"type":  "token.placed",
 				"seq":   room.nextSeq(),
@@ -696,6 +739,18 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
+			darkvision := token.Darkvision
+			if message.Darkvision != nil {
+				darkvision = *message.Darkvision
+			}
+			if darkvision < 0 || darkvision > 300 {
+				_ = room.send(conn, map[string]any{
+					"type":      "error",
+					"intent_id": message.IntentID,
+					"error":     map[string]string{"code": "bad_request", "message": "тёмное зрение от 0 до 300 футов"},
+				})
+				continue
+			}
 			updated, ok := s.content.SetTokenStats(campaign.ID, current, token.ID, hp, hpMax, initiative)
 			if !ok {
 				_ = room.send(conn, map[string]any{
@@ -705,6 +760,11 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				})
 				continue
 			}
+			if darkvision != token.Darkvision {
+				if changed, ok := s.content.SetTokenDarkvision(campaign.ID, current, token.ID, darkvision); ok {
+					updated = changed
+				}
+			}
 			room.broadcast(map[string]any{
 				"type":  "token.updated",
 				"seq":   room.nextSeq(),
@@ -712,6 +772,9 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 				"token": updated,
 				"actor": account,
 			})
+			if darkvision != token.Darkvision {
+				s.sendVisibility(room, campaign.ID, current)
+			}
 		default:
 			_ = room.send(conn, map[string]any{
 				"type":      "error",

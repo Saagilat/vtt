@@ -30,6 +30,11 @@ func visibilityFor(scene Scene, doors map[string]bool, tokens []Token, accountID
 	return maskFromBits(visibleBits(scene, doors, tokens, accountID), nil)
 }
 
+type visOrigin struct {
+	at     visPoint
+	radius float64
+}
+
 func visibleBits(scene Scene, doors map[string]bool, tokens []Token, accountID string) []byte {
 	width := float64(scene.Image.Width)
 	height := float64(scene.Image.Height)
@@ -44,10 +49,13 @@ func visibleBits(scene Scene, doors map[string]bool, tokens []Token, accountID s
 		}
 	}
 
-	var origins []visPoint
+	var origins []visOrigin
 	for _, token := range tokens {
 		if token.OwnerID == accountID {
-			origins = append(origins, visPoint{x: token.X, y: token.Y})
+			origins = append(origins, visOrigin{
+				at:     visPoint{x: token.X, y: token.Y},
+				radius: darkvisionRadius(scene, token),
+			})
 		}
 	}
 	mask := make([]byte, visibilityBlocks*visibilityBlocks/8)
@@ -63,7 +71,13 @@ func visibleBits(scene Scene, doors map[string]bool, tokens []Token, accountID s
 			centerX := (float64(col) + 0.5) * blockW
 			target := visPoint{x: centerX, y: centerY}
 			for _, origin := range origins {
-				if !blocked(origin, target, walls, openDoors) {
+				if origin.radius <= 0 {
+					continue
+				}
+				if math.Hypot(target.x-origin.at.x, target.y-origin.at.y) > origin.radius {
+					continue
+				}
+				if !blocked(origin.at, target, walls, openDoors) {
 					bit := row*visibilityBlocks + col
 					mask[bit/8] |= 1 << uint(bit%8)
 					break
@@ -72,6 +86,33 @@ func visibleBits(scene Scene, doors map[string]bool, tokens []Token, accountID s
 		}
 	}
 	return mask
+}
+
+// darkvisionRadius — предел взгляда в пикселях. На свету он бесконечен,
+// в темноте — только тёмное зрение фишки, пересчитанное из футов в пиксели.
+func darkvisionRadius(scene Scene, token Token) float64 {
+	if scene.Light != "dark" {
+		return math.MaxFloat64
+	}
+	if token.Darkvision <= 0 {
+		return 0
+	}
+	side, unitsPerCell := 50.0, 5.0
+	var grid struct {
+		Square struct {
+			SidePx float64 `json:"side_px"`
+		} `json:"square"`
+		UnitsPerCell float64 `json:"units_per_cell"`
+	}
+	if err := json.Unmarshal(scene.Grid, &grid); err == nil {
+		if grid.Square.SidePx > 0 {
+			side = grid.Square.SidePx
+		}
+		if grid.UnitsPerCell > 0 {
+			unitsPerCell = grid.UnitsPerCell
+		}
+	}
+	return float64(token.Darkvision) / unitsPerCell * side
 }
 
 // maskFromBits собирает ответ и объединяет текущую видимость с накопленной.

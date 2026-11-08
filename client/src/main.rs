@@ -141,6 +141,8 @@ struct Token {
     hp_max: i32,
     #[serde(default)]
     initiative: i32,
+    #[serde(default)]
+    darkvision_ft: i32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -153,7 +155,6 @@ struct Scene {
     walls: Value,
     doors: Value,
     areas: Value,
-    #[allow(dead_code)]
     light: String,
     #[allow(dead_code)]
     active: bool,
@@ -214,6 +215,7 @@ struct App {
     tokens: Vec<Token>,
     token_name: String,
     token_owner: String,
+    token_darkvision: i32,
     roll_formula: String,
     preview_account: String,
     preview_name: Option<String>,
@@ -272,6 +274,7 @@ impl App {
             tokens: Vec::new(),
             token_name: "Фишка".to_string(),
             token_owner: String::new(),
+            token_darkvision: 0,
             roll_formula: "1d20".to_string(),
             preview_account: String::new(),
             preview_name: None,
@@ -975,6 +978,21 @@ impl App {
                 "type": "scene.show",
                 "scene_id": scene_id,
             }));
+        }
+        if self.is_master() {
+            let light = self
+                .scene
+                .as_ref()
+                .map(|scene| scene.light.as_str())
+                .unwrap_or("bright");
+            let (label, next) = if light == "dark" {
+                ("Свет: темно", "bright")
+            } else {
+                ("Свет: ярко", "dark")
+            };
+            if accent_button(ui, label, 170.0).clicked() {
+                self.send_intent(serde_json::json!({"type": "scene.light", "light": next}));
+            }
         }
         if self.is_master() {
             ui.horizontal(|ui| {
@@ -2157,6 +2175,7 @@ impl App {
             "name": if name.is_empty() { "Фишка" } else { name.as_str() },
             "x": x,
             "y": y,
+            "darkvision_ft": self.token_darkvision,
         });
         if !self.token_owner.is_empty() {
             payload["owner_id"] = Value::String(self.token_owner.clone());
@@ -2164,13 +2183,21 @@ impl App {
         self.send_intent(payload);
     }
 
-    fn update_token(&mut self, token_id: &str, hp: i32, hp_max: i32, initiative: i32) {
+    fn update_token(
+        &mut self,
+        token_id: &str,
+        hp: i32,
+        hp_max: i32,
+        initiative: i32,
+        darkvision: i32,
+    ) {
         self.send_intent(serde_json::json!({
             "type": "token.update",
             "token_id": token_id,
             "hp": hp,
             "hp_max": hp_max,
             "initiative": initiative,
+            "darkvision_ft": darkvision,
         }));
     }
 
@@ -2376,6 +2403,10 @@ impl App {
                                 );
                             }
                         });
+                    ui.horizontal(|ui| {
+                        ui.label("тёмное зрение, фт");
+                        ui.add(egui::DragValue::new(&mut self.token_darkvision).range(0..=300));
+                    });
                     if ui.button("+ в центр сцены").clicked() {
                         self.place_token();
                     }
@@ -2461,6 +2492,7 @@ impl App {
                     let mut hp = token.hp;
                     let mut hp_max = token.hp_max.max(1);
                     let mut initiative = token.initiative;
+                    let mut darkvision = token.darkvision_ft;
                     let mut touched = false;
                     ui.horizontal(|ui| {
                         ui.label("HP");
@@ -2476,13 +2508,19 @@ impl App {
                             .add(egui::DragValue::new(&mut initiative).range(-100..=1000))
                             .changed();
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("тёмное зрение, фт");
+                        touched |= ui
+                            .add(egui::DragValue::new(&mut darkvision).range(0..=300))
+                            .changed();
+                    });
                     if touched {
-                        changed = Some((token.id.clone(), hp, hp_max, initiative));
+                        changed = Some((token.id.clone(), hp, hp_max, initiative, darkvision));
                     }
                 }
             }
-            if let Some((id, hp, hp_max, initiative)) = changed {
-                self.update_token(&id, hp, hp_max, initiative);
+            if let Some((id, hp, hp_max, initiative, darkvision)) = changed {
+                self.update_token(&id, hp, hp_max, initiative, darkvision);
             }
             if self.is_master() {
                 let label = if self.round == 0 {

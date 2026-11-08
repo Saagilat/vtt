@@ -74,6 +74,32 @@ func TestMaskFromBitsKeepsExplored(t *testing.T) {
 	}
 }
 
+func TestVisibilityDarkvisionRadius(t *testing.T) {
+	scene := Scene{
+		Image: Image{Width: 100, Height: 100},
+		Light: "dark",
+		Grid:  json.RawMessage(`{"mode":"square","square":{"side_px":10}}`),
+		Walls: json.RawMessage(`[]`),
+		Doors: json.RawMessage(`[]`),
+	}
+	token := Token{ID: "t1", OwnerID: "bob", X: 50, Y: 50, Darkvision: 5}
+	mask := testMask(t, visibilityFor(scene, nil, []Token{token}, "bob"))
+	if !maskBit(mask, 128, 128) {
+		t.Fatal("фишка не видит себя в темноте")
+	}
+	if maskBit(mask, 200, 128) {
+		t.Fatal("тёмное зрение видит дальше радиуса")
+	}
+
+	blind := Token{ID: "t2", OwnerID: "carol", X: 50, Y: 50}
+	dark := testMask(t, visibilityFor(scene, nil, []Token{blind}, "carol"))
+	for _, value := range dark {
+		if value != 0 {
+			t.Fatal("без тёмного зрения в темноте что-то видно")
+		}
+	}
+}
+
 func TestVisibilityNeedsOwnToken(t *testing.T) {
 	scene := Scene{
 		Image: Image{Width: 100, Height: 100},
