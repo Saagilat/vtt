@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO / 'scripts'))
 import fixtures  # noqa: E402
 import classical  # noqa: E402
 import grid  # noqa: E402
+import model as wall_model  # noqa: E402
 import score as scoring  # noqa: E402
 import validate_annotation as contract  # noqa: E402
 
@@ -163,6 +164,13 @@ def run_case(case_dir, out_root, annotator_cmd='', detector='prototype'):
         grid_notes = result['notes']
         overlay = grid.draw_overlay(image, source.name, result['vertical'], result['horizontal'],
                                     result['is_grid'], result['notes'])
+    elif detector == 'model':
+        image = Image.open(source).convert('RGB')
+        session = wall_model.load_session(wall_model.DEFAULT_MODEL)
+        doc = wall_model.detect(source, session)
+        grid_flag = doc['grid']['mode'] != 'none'
+        grid_notes = ['модель: U-Net 256']
+        overlay = overlay_annotation(image, doc, source.name)
     else:
         image = Image.open(source).convert('RGB')
         doc = classical.detect(source, suppress_grid=(detector == 'classical'))
@@ -261,6 +269,13 @@ def run_real(path, out_root, detector='prototype'):
         grid_notes = result['notes']
         overlay = grid.draw_overlay(image, path.name, result['vertical'], result['horizontal'],
                                     result['is_grid'], result['notes'])
+    elif detector == 'model':
+        image = Image.open(path).convert('RGB')
+        session = wall_model.load_session(wall_model.DEFAULT_MODEL)
+        doc = wall_model.detect(path, session)
+        grid_flag = doc['grid']['mode'] != 'none'
+        grid_notes = ['модель: U-Net 256']
+        overlay = overlay_annotation(image, doc, path.name)
     else:
         image = Image.open(path).convert('RGB')
         doc = classical.detect(path, suppress_grid=(detector == 'classical'))
@@ -295,10 +310,10 @@ def main():
     parser.add_argument('--rebuild', action='store_true', help='пересобрать фикстуры')
     parser.add_argument('--annotator-cmd', default='',
                         help='команда разметчика; по умолчанию гоняется прототип сетки')
-    parser.add_argument('--detector', choices=('prototype', 'classical', 'classical-no-suppress'),
+    parser.add_argument('--detector', choices=('prototype', 'classical', 'classical-no-suppress', 'model'),
                         default='prototype',
                         help='prototype — только сетка; classical — Canny+Хаф с подавлением сетки; '
-                             'classical-no-suppress — то же без подавления')
+                             'classical-no-suppress — то же без подавления; model — U-Net на синтетике')
     args = parser.parse_args()
 
     out_root = pathlib.Path(args.out)
