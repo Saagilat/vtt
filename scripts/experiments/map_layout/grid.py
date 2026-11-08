@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
 # Стенд подготовки карты: есть ли на карте напечатанная сетка и можно ли её стереть.
 #
-# Это инструмент эксперимента, а не проект: в пакеты он не едет, фикстуры в git не кладутся.
-# Решение «годится / не годится» принимает человек глазами; числа здесь — чтобы знать, куда
-# смотреть.
+# Инструмент эксперимента, а не проект: в пакеты не едет, карты мастера в git не кладутся.
+# Решение «годится / не годится» принимает человек глазами; числа — чтобы знать, куда смотреть.
 #
-# Как ищется сетка: по среднему профилю яркости. Если линии есть, то на предсказанных линиях
-# яркость ниже, чем между ними. Перебираем шаг и сдвиг, считаем провал между серединой
-# промежутка и линией; лучший кандидат и есть гипотеза. Порог «подтверждено» — 5 оттенков:
-# на настоящих картах с сеткой провал был 11–29, на карте без сетки — до 2.
+# Сетка ищется по среднему профилю яркости: на предсказанных линиях яркость ниже, чем между
+# ними. Перебираем шаг и сдвиг, считаем провал. Порог «подтверждено» — 5 оттенков: на настоящих
+# картах с сеткой провал был 11–29, на карте без сетки — до 2.
 #
 # Плитка и паркет дают такой же провал, поэтому одной яркости мало: у настоящей печатной сетки
-# шаг по осям один и тот же, а линии тонкие. Если шаги расходятся или швы широкие, стенд говорит
-# «не подтверждена» и предлагает посмотреть глазами.
+# шаг по осям один и тот же (допуск 1 px), а линии тонкие (до 4 px). Иначе — «не подтверждена».
 #
 # Использование:
-#   python3 scripts/experiments/map_layout/grid.py --in 'тестовый материал'
-#   python3 scripts/experiments/map_layout/grid.py --in kartinka.jpg --erase
+#   python3 scripts/experiments/map_layout/grid.py --in 'тестовый материал' --erase
 
 import argparse
 import pathlib
 import sys
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp')
 CONFIRMED = 5.0
 WEAK = 2.0
+STEP_TOLERANCE = 1
+MAX_GRID_WIDTH = 4
+FONT_PATHS = ('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+              '/usr/share/fonts/TTF/DejaVuSans.ttf')
 
 
-def load_gray(path):
-    image = Image.open(path).convert('L')
-    return np.asarray(image, dtype=np.float32)
+def load_font(size):
+    for path in FONT_PATHS:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def profile(gray, axis):
@@ -46,7 +50,7 @@ def best_offset(v, step):
     for offset in range(step):
         lines = np.arange(offset, len(v), step)
         mids = np.arange(offset + step // 2, len(v), step)
-        if len(lines) < 3 or len(mids) < 2:
+        if len(lines) < 5 or len(mids) < 4:
             continue
         line = float(v[lines].mean())
         between = float(v[mids].mean())
@@ -96,6 +100,7 @@ def detect(v, step_min, step_max):
         return None
     best_drop = max(c['drop'] for c in candidates)
     # Меньший шаг лучше большего, если провал почти такой же: 70, а не 140.
+    # Меньше пяти линий — не сетка, а рамка или пара крупных деталей.
     good = [c for c in candidates if c['drop'] >= best_drop * 0.85]
     chosen = min(good, key=lambda c: c['step'])
     chosen['width'] = estimate_width(v, chosen['offset'], chosen['step'])
@@ -103,9 +108,7 @@ def detect(v, step_min, step_max):
     return chosen
 
 
-# Сетка — правило стола с равными клетками: у настоящей печатной сетки шаг по осям один и тот
-# же, а линии тонкие. Плитка и паркет дают провал не хуже, но шаги по осям расходятся или швы
-# широкие. Это не приговор, а повод посмотреть глазами.
+# Сетка — правило стола с равными клетками: шаг по осям один и тот же, линии тонкие.
 def combined(vertical, horizontal):
     notes = []
     axes = [d for d in (vertical, horizontal) if d is not None]
@@ -117,31 +120,59 @@ def combined(vertical, horizontal):
     if len(confirmed) < 2:
         return False, ['подтверждена только одна ось']
     step_v, step_h = vertical['step'], horizontal['step']
-    tolerance = max(2, int(round(max(step_v, step_h) * 0.02)))
-    if abs(step_v - step_h) > tolerance:
+    if abs(step_v - step_h) > STEP_TOLERANCE:
         notes.append('шаги по осям не совпадают (' + str(step_v) + ' и ' + str(step_h) + ')')
     width = max(vertical['width'], horizontal['width'])
-    if width > 4:
-        notes.append('линии толстые (' + str(width) + ' px), у печатной сетки обычно 1–3')
+    if width > MAX_GRID_WIDTH:
+        notes.append('линии толстые (' + str(width) + ' px), у печатной сетки до ' + str(MAX_GRID_WIDTH))
     if notes:
         return False, notes
     return True, ['обе оси, шаг ' + str(step_v) + ', толщина ' + str(vertical['width'])]
 
 
-def overlay(gray, vertical, horizontal):
-    rgb = np.stack([gray, gray, gray], axis=-1).copy()
-    red = np.array([220.0, 30.0, 30.0], dtype=np.float32)
-    if vertical is not None:
-        for c in np.arange(vertical['offset'], rgb.shape[1], vertical['step']):
-            rgb[:, c] = rgb[:, c] * 0.35 + red * 0.65
-    if horizontal is not None:
-        for r in np.arange(horizontal['offset'], rgb.shape[0], horizontal['step']):
-            rgb[r, :] = rgb[r, :] * 0.35 + red * 0.65
-    return np.clip(rgb, 0.0, 255.0).astype(np.uint8)
+def draw_overlay(image, title, vertical, horizontal, is_grid, notes):
+    result = image.copy()
+    draw = ImageDraw.Draw(result)
+    thickness = max(2, image.size[0] // 700)
+    for det, axis in ((vertical, 'v'), (horizontal, 'h')):
+        if det is None:
+            continue
+        if det['verdict'] == 'подтверждено':
+            color = (220, 30, 30)
+        else:
+            color = (255, 150, 0)
+        if axis == 'v':
+            for c in range(det['offset'], image.size[0], det['step']):
+                draw.line([(c, 0), (c, image.size[1])], fill=color, width=thickness)
+        else:
+            for r in range(det['offset'], image.size[1], det['step']):
+                draw.line([(0, r), (image.size[0], r)], fill=color, width=thickness)
+
+    font = load_font(max(16, image.size[0] // 55))
+    lines = [title]
+    for label, det in (('верт', vertical), ('гор', horizontal)):
+        if det is None:
+            lines.append(label + ': кандидатов нет')
+            continue
+        lines.append(label + ': шаг ' + str(det['step']) + ', провал ' + str(round(det['drop'], 1))
+                     + ', толщина ' + str(det['width']) + ' — ' + det['verdict'])
+    lines.append(('сетка: ' if is_grid else 'сетка не подтверждена: ') + '; '.join(notes))
+    line_height = int(font.size) + 6 if hasattr(font, 'size') else 22
+    box_width = 0
+    for text in lines:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        box_width = max(box_width, bbox[2])
+    box_height = line_height * len(lines) + 16
+    draw.rectangle([(0, 0), (box_width + 20, box_height)], fill=(0, 0, 0))
+    y = 8
+    for text in lines:
+        draw.text((10, y), text, fill=(255, 255, 255), font=font)
+        y += line_height
+    return result
 
 
-def erase(gray, vertical, horizontal):
-    out = gray.copy()
+def erase(rgb, vertical, horizontal):
+    out = rgb.astype(np.float32).copy()
     for det, axis in ((vertical, 'v'), (horizontal, 'h')):
         if det is None or det['verdict'] != 'подтверждено':
             continue
@@ -152,36 +183,33 @@ def erase(gray, vertical, horizontal):
                 if left < 0 or right >= out.shape[1]:
                     continue
                 t = np.linspace(0.0, 1.0, 2 * half + 3)[1:-1]
-                out[:, c - half:c + half + 1] = (out[:, left][:, None] * (1 - t)
-                                                + out[:, right][:, None] * t)
+                out[:, c - half:c + half + 1, :] = (out[:, left][:, None, :] * (1 - t)[None, :, None]
+                                                    + out[:, right][:, None, :] * t[None, :, None])
         else:
             for r in np.arange(det['offset'], out.shape[0], det['step']):
                 up, down = r - half - 1, r + half + 1
                 if up < 0 or down >= out.shape[0]:
                     continue
                 t = np.linspace(0.0, 1.0, 2 * half + 3)[1:-1]
-                out[r - half:r + half + 1, :] = (out[up, :][None, :] * (1 - t)[:, None]
-                                                 + out[down, :][None, :] * t[:, None])
-    return out
-
-
-def describe(title, det):
-    if det is None:
-        print('  ' + title + ': кандидатов нет')
-        return
-    print('  ' + title + ': шаг ' + str(det['step']) + ', сдвиг ' + str(det['offset'])
-          + ', провал ' + str(round(det['drop'], 1)) + ', толщина ' + str(det['width'])
-          + ' → ' + det['verdict'])
+                out[r - half:r + half + 1, :, :] = (out[up, :, :][None, :, :] * (1 - t)[:, None, None]
+                                                    + out[down, :, :][None, :, :] * t[:, None, None])
+    return np.clip(out, 0.0, 255.0).astype(np.uint8)
 
 
 def process(path, out_dir, step_min, step_max, do_erase):
-    gray = load_gray(path)
+    image = Image.open(path).convert('RGB')
+    gray = np.asarray(image.convert('L'), dtype=np.float32)
     vertical = detect(profile(gray, axis=0), step_min, step_max)
     horizontal = detect(profile(gray, axis=1), step_min, step_max)
 
-    print(path.name + ': ' + str(gray.shape[1]) + 'x' + str(gray.shape[0]))
-    describe('вертикаль', vertical)
-    describe('горизонталь', horizontal)
+    print(path.name + ': ' + str(image.size[0]) + 'x' + str(image.size[1]))
+    for label, det in (('вертикаль', vertical), ('горизонталь', horizontal)):
+        if det is None:
+            print('  ' + label + ': кандидатов нет')
+        else:
+            print('  ' + label + ': шаг ' + str(det['step']) + ', сдвиг ' + str(det['offset'])
+                  + ', провал ' + str(round(det['drop'], 1)) + ', толщина ' + str(det['width'])
+                  + ' → ' + det['verdict'])
 
     is_grid, notes = combined(vertical, horizontal)
     if is_grid:
@@ -189,13 +217,15 @@ def process(path, out_dir, step_min, step_max, do_erase):
     else:
         print('  вывод: сетка не подтверждена — ' + '; '.join(notes))
 
+    overlay = draw_overlay(image, path.name, vertical, horizontal, is_grid, notes)
     grid_path = out_dir / (path.stem + '.grid.png')
-    Image.fromarray(overlay(gray, vertical, horizontal)).save(grid_path)
+    overlay.save(grid_path)
     print('  наложено: ' + str(grid_path))
 
     if do_erase and is_grid:
         erased_path = out_dir / (path.stem + '.erased.png')
-        Image.fromarray(np.clip(erase(gray, vertical, horizontal), 0.0, 255.0).astype(np.uint8)).save(erased_path)
+        image_rgb = np.asarray(image, dtype=np.float32)
+        Image.fromarray(erase(image_rgb, vertical, horizontal)).save(erased_path)
         print('  стёрто: ' + str(erased_path))
     elif do_erase:
         print('  стёрто: пропущено, сетка не подтверждена')
