@@ -213,6 +213,7 @@ impl App {
         install_dir: Option<PathBuf>,
     ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        apply_theme(&cc.egui_ctx);
         let mut app = Self {
             base_url,
             login: String::new(),
@@ -619,131 +620,224 @@ fn format_error(error: ureq::Error) -> String {
 
 impl App {
     fn show_login(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(40.0);
+        ui.add_space(50.0);
         ui.vertical_centered(|ui| {
-            ui.heading("VTT");
-            ui.label("вход в кампанию");
-            ui.add_space(12.0);
-            ui.set_max_width(360.0);
-            ui.label("сервер");
-            ui.text_edit_singleline(&mut self.base_url);
-            ui.label("логин");
-            ui.text_edit_singleline(&mut self.login);
-            ui.label("пароль");
-            ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
-            ui.add_space(8.0);
-            if ui.button("Войти").clicked() {
-                self.login();
-            }
-            if !self.error.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &self.error);
-            }
+            ui.label(
+                egui::RichText::new("VTT")
+                    .size(42.0)
+                    .strong()
+                    .color(WARM_ACCENT),
+            );
+            ui.label(
+                egui::RichText::new("стол, карта и кости")
+                    .size(18.0)
+                    .color(WARM_MUTED),
+            );
+            ui.add_space(18.0);
+            warm_frame(WARM_PANEL).show(ui, |ui| {
+                ui.set_width(420.0);
+                ui.label("сервер");
+                ui.add_sized(
+                    [420.0, 38.0],
+                    egui::TextEdit::singleline(&mut self.base_url),
+                );
+                ui.label("логин");
+                ui.add_sized([420.0, 38.0], egui::TextEdit::singleline(&mut self.login));
+                ui.label("пароль");
+                ui.add_sized(
+                    [420.0, 38.0],
+                    egui::TextEdit::singleline(&mut self.password).password(true),
+                );
+                ui.add_space(12.0);
+                if accent_button(ui, "Войти", 420.0).clicked() {
+                    self.login();
+                }
+                if !self.error.is_empty() {
+                    ui.colored_label(WARM_DANGER, &self.error);
+                }
+            });
         });
     }
 
     fn show_campaigns(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Кампании");
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("Кампании")
+                .size(30.0)
+                .strong()
+                .color(WARM_ACCENT),
+        );
+        ui.label(
+            egui::RichText::new("выберите стол или создайте новый")
+                .size(16.0)
+                .color(WARM_MUTED),
+        );
+        ui.add_space(10.0);
         if self.campaigns.is_empty() {
             ui.label("пока пусто — создайте кампанию или войдите по коду");
         }
         let items = self.campaigns.clone();
+        let card_width = ui.available_width().min(760.0);
         for campaign in items {
-            if ui
-                .button(format!(
-                    "{}  ·  {}",
-                    campaign.name,
-                    role_name(&campaign.role)
-                ))
-                .clicked()
-            {
+            let subtitle = format!("роль: {}", role_name(&campaign.role));
+            if card_button(ui, &campaign.name, &subtitle, card_width).clicked() {
                 self.open_campaign(campaign);
             }
+            ui.add_space(6.0);
         }
-        ui.separator();
-        ui.heading("Новая кампания");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_campaign)
-                    .hint_text("название")
-                    .desired_width(260.0),
+        ui.add_space(12.0);
+        warm_frame(WARM_PANEL).show(ui, |ui| {
+            ui.set_width(card_width);
+            ui.label(
+                egui::RichText::new("Новая кампания")
+                    .size(20.0)
+                    .strong()
+                    .color(WARM_TEXT),
             );
-            if ui.button("Создать").clicked() {
-                self.create_campaign();
-            }
-            if ui.button("Демо-стол").clicked() {
-                self.create_demo();
-            }
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [320.0, 40.0],
+                    egui::TextEdit::singleline(&mut self.new_campaign).hint_text("название"),
+                );
+                if accent_button(ui, "Создать", 140.0).clicked() {
+                    self.create_campaign();
+                }
+                if ui
+                    .add_sized(
+                        [150.0, 42.0],
+                        egui::Button::new(egui::RichText::new("Демо-стол").strong())
+                            .fill(WARM_ACCENT_DARK)
+                            .stroke(egui::Stroke::new(1.5, WARM_ACCENT)),
+                    )
+                    .clicked()
+                {
+                    self.create_demo();
+                }
+            });
         });
-        ui.separator();
-        ui.heading("Войти по коду");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.join_code)
-                    .hint_text("код от мастера")
-                    .desired_width(180.0),
+        ui.add_space(10.0);
+        warm_frame(WARM_PANEL).show(ui, |ui| {
+            ui.set_width(card_width);
+            ui.label(
+                egui::RichText::new("Войти по коду")
+                    .size(20.0)
+                    .strong()
+                    .color(WARM_TEXT),
             );
-            if ui.button("Войти").clicked() {
-                self.accept_invite();
-            }
+            ui.label(
+                egui::RichText::new("код приглашения выдаёт мастер кампании")
+                    .size(15.0)
+                    .color(WARM_MUTED),
+            );
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [240.0, 40.0],
+                    egui::TextEdit::singleline(&mut self.join_code).hint_text("код от мастера"),
+                );
+                if accent_button(ui, "Войти", 140.0).clicked() {
+                    self.accept_invite();
+                }
+            });
         });
     }
 
     fn show_scenes(&mut self, ui: &mut egui::Ui) {
-        if ui.button("← кампании").clicked() {
+        if ui
+            .add_sized([130.0, 38.0], egui::Button::new("← Кампании"))
+            .clicked()
+        {
             self.screen = Screen::Campaigns;
         }
+        ui.add_space(4.0);
+        let width = ui.available_width().min(760.0);
         if let Some(campaign) = &self.campaign {
-            ui.heading(&campaign.name);
+            ui.label(
+                egui::RichText::new(&campaign.name)
+                    .size(30.0)
+                    .strong()
+                    .color(WARM_ACCENT),
+            );
             if campaign.role == "owner" {
-                if ui.button("Пригласить игрока").clicked() {
+                if accent_button(ui, "Пригласить игрока", 230.0).clicked() {
                     self.create_invite();
                 }
                 if !self.invite_code.is_empty() {
-                    ui.label(format!("код: {}", self.invite_code));
+                    ui.label(
+                        egui::RichText::new(format!("код приглашения: {}", self.invite_code))
+                            .size(18.0)
+                            .strong()
+                            .color(WARM_ACCENT_HOVER),
+                    );
                 }
             }
         }
         if let Some(detail) = &self.campaign_detail {
-            ui.label("участники:");
-            for member in &detail.members {
-                ui.label(format!("  {} — {}", member.login, member.role));
-            }
-            ui.separator();
+            warm_frame(WARM_PANEL).show(ui, |ui| {
+                ui.set_width(width);
+                ui.label(
+                    egui::RichText::new("Участники")
+                        .size(18.0)
+                        .strong()
+                        .color(WARM_TEXT),
+                );
+                for member in &detail.members {
+                    ui.label(format!("{}  ·  {}", member.login, role_name(&member.role)));
+                }
+            });
         }
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new("Сцены")
+                .size(22.0)
+                .strong()
+                .color(WARM_TEXT),
+        );
         if self.scenes.is_empty() {
             ui.label("сцен нет — откройте «Импорт карты» ниже");
         }
         let items = self.scenes.clone();
         for scene in items {
-            let mark = if scene.active {
-                " · активна"
+            let subtitle = if scene.active {
+                "● активна — открыть стол"
             } else {
-                ""
+                "открыть стол"
             };
-            if ui.button(format!("{}{}", scene.name, mark)).clicked() {
+            if card_button(ui, &scene.name, subtitle, width).clicked() {
                 self.open_scene(scene);
             }
+            ui.add_space(6.0);
         }
         if let Some(campaign) = &self.campaign {
             if campaign.role == "owner" || campaign.role == "master" {
-                ui.separator();
-                egui::CollapsingHeader::new("Импорт карты")
-                    .default_open(self.scenes.is_empty())
-                    .show(ui, |ui| {
-                        ui.label("перетащите в окно картинку и annotation.json — или впишите пути");
-                        ui.label(format!("картинка: {}", file_name(&self.image_path)));
-                        ui.text_edit_singleline(&mut self.image_path);
-                        ui.label(format!(
-                            "annotation.json: {}",
-                            file_name(&self.annotation_path)
-                        ));
-                        ui.text_edit_singleline(&mut self.annotation_path);
-                        ui.label("имя сцены");
-                        ui.text_edit_singleline(&mut self.scene_name);
-                        if ui.button("Импортировать").clicked() {
-                            self.import_scene();
-                        }
-                    });
+                ui.add_space(10.0);
+                egui::CollapsingHeader::new(
+                    egui::RichText::new("Импорт карты").size(18.0).strong(),
+                )
+                .default_open(self.scenes.is_empty())
+                .show(ui, |ui| {
+                    ui.label("перетащите в окно картинку и annotation.json — или впишите пути");
+                    ui.label(format!("картинка: {}", file_name(&self.image_path)));
+                    ui.add_sized(
+                        [width, 38.0],
+                        egui::TextEdit::singleline(&mut self.image_path),
+                    );
+                    ui.label(format!(
+                        "annotation.json: {}",
+                        file_name(&self.annotation_path)
+                    ));
+                    ui.add_sized(
+                        [width, 38.0],
+                        egui::TextEdit::singleline(&mut self.annotation_path),
+                    );
+                    ui.label("имя сцены");
+                    ui.add_sized(
+                        [width, 38.0],
+                        egui::TextEdit::singleline(&mut self.scene_name),
+                    );
+                    if accent_button(ui, "Импортировать", 220.0).clicked() {
+                        self.import_scene();
+                    }
+                });
             }
         }
     }
@@ -753,15 +847,23 @@ impl App {
     fn show_scene(&mut self, ui: &mut egui::Ui) {
         let mut show_all = false;
         ui.horizontal(|ui| {
-            if ui.button("← сцены").clicked() {
+            if ui
+                .add_sized([110.0, 38.0], egui::Button::new("← Сцены"))
+                .clicked()
+            {
                 self.screen = Screen::Scenes;
             }
             if let Some(scene) = &self.scene {
-                ui.heading(&scene.name);
+                ui.label(
+                    egui::RichText::new(&scene.name)
+                        .size(26.0)
+                        .strong()
+                        .color(WARM_ACCENT),
+                );
             }
             if let Some(campaign) = &self.campaign {
                 if campaign.role == "owner" || campaign.role == "master" {
-                    if ui.button("Показать всем").clicked() {
+                    if accent_button(ui, "Показать всем", 180.0).clicked() {
                         show_all = true;
                     }
                 }
@@ -781,10 +883,10 @@ impl App {
                 "Перетащите свою фишку, бросьте кубы во вкладке «Чат» и дождитесь своего хода во вкладке «Бой»."
             };
             let mut dismiss = false;
-            egui::Frame::group(ui.style()).show(ui, |ui| {
+            warm_frame(WARM_CARD).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(text);
-                    if ui.small_button("Понятно").clicked() {
+                    ui.label(egui::RichText::new(text).size(16.0));
+                    if accent_button(ui, "Понятно", 110.0).clicked() {
                         dismiss = true;
                     }
                 });
@@ -835,7 +937,7 @@ impl App {
                             origin.x + token.x as f32 * self.zoom,
                             origin.y + token.y as f32 * self.zoom,
                         );
-                        center.distance(position) <= 16.0 && self.can_move_token(token)
+                        center.distance(position) <= 18.0 && self.can_move_token(token)
                     })
                     .map(|token| token.id.clone());
             }
@@ -964,26 +1066,26 @@ impl App {
         for token in &self.tokens {
             let center = to_screen(token.x as f32, token.y as f32);
             let fill = token_color(&token.color);
-            let radius = 13.0;
+            let radius = 15.0;
             painter.circle_filled(center, radius, fill);
             painter.circle_stroke(
                 center,
                 radius,
                 egui::Stroke::new(2.0, egui::Color32::from_rgb(30, 30, 30)),
             );
-            let label = center + egui::vec2(0.0, radius + 9.0);
+            let label = center + egui::vec2(0.0, radius + 10.0);
             painter.text(
                 label + egui::vec2(1.0, 1.0),
                 egui::Align2::CENTER_CENTER,
                 &token.name,
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(14.0),
                 egui::Color32::BLACK,
             );
             painter.text(
                 label,
                 egui::Align2::CENTER_CENTER,
                 &token.name,
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(14.0),
                 egui::Color32::WHITE,
             );
         }
@@ -1128,6 +1230,99 @@ fn role_name(role: &str) -> &'static str {
         "observer" => "наблюдатель",
         _ => "участник",
     }
+}
+
+const WARM_BG: egui::Color32 = egui::Color32::from_rgb(34, 27, 22);
+const WARM_PANEL: egui::Color32 = egui::Color32::from_rgb(45, 35, 28);
+const WARM_CARD: egui::Color32 = egui::Color32::from_rgb(58, 45, 36);
+const WARM_CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(74, 56, 43);
+const WARM_BORDER: egui::Color32 = egui::Color32::from_rgb(104, 78, 58);
+const WARM_TEXT: egui::Color32 = egui::Color32::from_rgb(245, 231, 216);
+const WARM_MUTED: egui::Color32 = egui::Color32::from_rgb(201, 173, 148);
+const WARM_ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 154, 78);
+const WARM_ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(235, 177, 104);
+const WARM_ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(147, 94, 45);
+const WARM_DANGER: egui::Color32 = egui::Color32::from_rgb(224, 108, 90);
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.global_style()).clone();
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = WARM_BG;
+    visuals.window_fill = WARM_PANEL;
+    visuals.extreme_bg_color = egui::Color32::from_rgb(27, 21, 17);
+    visuals.faint_bg_color = WARM_PANEL;
+    visuals.override_text_color = Some(WARM_TEXT);
+    visuals.hyperlink_color = WARM_ACCENT;
+    visuals.warn_fg_color = WARM_ACCENT_HOVER;
+    visuals.error_fg_color = WARM_DANGER;
+    visuals.selection.bg_fill = WARM_ACCENT_DARK;
+    visuals.selection.stroke = egui::Stroke::new(1.5, WARM_TEXT);
+
+    let widgets = &mut visuals.widgets;
+    widgets.noninteractive.bg_fill = WARM_PANEL;
+    widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, WARM_BORDER);
+    widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, WARM_MUTED);
+    widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
+    widgets.inactive.bg_fill = WARM_CARD;
+    widgets.inactive.weak_bg_fill = WARM_CARD;
+    widgets.inactive.bg_stroke = egui::Stroke::new(1.0, WARM_BORDER);
+    widgets.inactive.fg_stroke = egui::Stroke::new(1.0, WARM_TEXT);
+    widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+    widgets.hovered.bg_fill = WARM_CARD_HOVER;
+    widgets.hovered.weak_bg_fill = WARM_CARD_HOVER;
+    widgets.hovered.bg_stroke = egui::Stroke::new(1.5, WARM_ACCENT);
+    widgets.hovered.fg_stroke = egui::Stroke::new(1.5, WARM_ACCENT_HOVER);
+    widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+    widgets.active.bg_fill = WARM_ACCENT_DARK;
+    widgets.active.weak_bg_fill = WARM_ACCENT_DARK;
+    widgets.active.bg_stroke = egui::Stroke::new(1.5, WARM_ACCENT_HOVER);
+    widgets.active.fg_stroke = egui::Stroke::new(1.5, WARM_TEXT);
+    widgets.active.corner_radius = egui::CornerRadius::same(8);
+    widgets.open.bg_fill = WARM_CARD_HOVER;
+    widgets.open.weak_bg_fill = WARM_CARD_HOVER;
+    widgets.open.bg_stroke = egui::Stroke::new(1.5, WARM_ACCENT);
+    widgets.open.fg_stroke = egui::Stroke::new(1.5, WARM_ACCENT_HOVER);
+    widgets.open.corner_radius = egui::CornerRadius::same(8);
+    visuals.window_corner_radius = egui::CornerRadius::same(12);
+
+    style.visuals = visuals;
+    style.text_styles = [
+        (egui::TextStyle::Heading, egui::FontId::proportional(28.0)),
+        (egui::TextStyle::Body, egui::FontId::proportional(17.0)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(15.0)),
+        (egui::TextStyle::Button, egui::FontId::proportional(18.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(14.0)),
+    ]
+    .into();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(16.0, 10.0);
+    style.spacing.interact_size = egui::vec2(48.0, 38.0);
+    style.spacing.slider_width = 140.0;
+    ctx.set_global_style(style);
+}
+
+fn warm_frame(fill: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, WARM_BORDER))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(14))
+}
+
+fn accent_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
+    let button = egui::Button::new(egui::RichText::new(text).strong())
+        .fill(WARM_ACCENT_DARK)
+        .stroke(egui::Stroke::new(1.5, WARM_ACCENT));
+    ui.add_sized([width, 42.0], button)
+}
+
+fn card_button(ui: &mut egui::Ui, title: &str, subtitle: &str, width: f32) -> egui::Response {
+    let text = format!("{title}\n{subtitle}");
+    let button = egui::Button::new(egui::RichText::new(text).size(18.0))
+        .fill(WARM_CARD)
+        .stroke(egui::Stroke::new(1.0, WARM_BORDER))
+        .min_size(egui::vec2(width, 62.0));
+    ui.add(button)
 }
 
 fn token_color(value: &str) -> egui::Color32 {
@@ -1628,8 +1823,17 @@ impl App {
     }
 
     fn show_chat(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Стол");
-        ui.label(&self.chat_status);
+        ui.label(
+            egui::RichText::new("Стол")
+                .size(24.0)
+                .strong()
+                .color(WARM_ACCENT),
+        );
+        ui.label(
+            egui::RichText::new(&self.chat_status)
+                .size(15.0)
+                .color(WARM_MUTED),
+        );
         if !self.is_master() && self.panel_tab == PanelTab::Master {
             self.panel_tab = PanelTab::Chat;
         }
@@ -1661,6 +1865,13 @@ impl App {
                 .auto_shrink([false, false])
                 .max_height(220.0)
                 .show(ui, |ui| {
+                    if self.chat_lines.is_empty() {
+                        ui.label(
+                            egui::RichText::new("сообщений пока нет")
+                                .size(15.0)
+                                .color(WARM_MUTED),
+                        );
+                    }
                     for line in &self.chat_lines {
                         ui.label(line);
                     }
@@ -1861,29 +2072,36 @@ impl eframe::App for App {
         let logged = self.token.is_some();
         let mut logout = false;
         let mut open_settings = false;
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("VTT");
-                if let Some(login) = &account_login {
-                    ui.separator();
-                    match role_label {
-                        Some(role) => ui.label(format!("{login} · {role}")),
-                        None => ui.label(login),
-                    };
-                }
-                if self.screen == Screen::Scene {
-                    ui.separator();
-                    ui.weak(&connection);
-                }
-                if logged {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Настройки").clicked() {
-                            open_settings = true;
-                        }
-                    });
-                }
+        egui::Panel::top("top")
+            .frame(warm_frame(WARM_PANEL).inner_margin(egui::Margin::symmetric(14, 8)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("VTT")
+                            .size(26.0)
+                            .strong()
+                            .color(WARM_ACCENT),
+                    );
+                    if let Some(login) = &account_login {
+                        ui.separator();
+                        match role_label {
+                            Some(role) => ui.label(format!("{login} · {role}")),
+                            None => ui.label(login),
+                        };
+                    }
+                    if self.screen == Screen::Scene {
+                        ui.separator();
+                        ui.weak(&connection);
+                    }
+                    if logged {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Настройки").clicked() {
+                                open_settings = true;
+                            }
+                        });
+                    }
+                });
             });
-        });
         if open_settings {
             self.show_settings = true;
         }
@@ -1931,7 +2149,8 @@ impl eframe::App for App {
         if self.screen == Screen::Scene {
             egui::Panel::right("chat")
                 .resizable(true)
-                .default_size(340.0)
+                .default_size(380.0)
+                .frame(warm_frame(WARM_PANEL).inner_margin(egui::Margin::same(12)))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| self.show_chat(ui));
                 });
@@ -1968,7 +2187,7 @@ fn main() {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 860.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]),
         ..Default::default()
     };
     if let Err(error) = eframe::run_native(
