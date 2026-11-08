@@ -22,6 +22,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: launcher/go.mod
+          cache-dependency-path: launcher/go.sum
       - name: Окно требует GL и X11 — заголовки для cgo
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
       - name: Форматирование — gofmt не находит, что менять
