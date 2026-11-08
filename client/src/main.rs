@@ -420,6 +420,13 @@ enum Screen {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+enum CampaignAction {
+    None,
+    Create,
+    Join,
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum PanelTab {
     Chat,
     Combat,
@@ -443,6 +450,7 @@ struct App {
     account: Option<Account>,
     campaigns: Vec<Campaign>,
     show_archived: bool,
+    campaign_action: CampaignAction,
     campaign: Option<Campaign>,
     campaign_detail: Option<CampaignDetail>,
     new_campaign: String,
@@ -538,6 +546,7 @@ impl App {
             account: None,
             campaigns: Vec::new(),
             show_archived: false,
+            campaign_action: CampaignAction::None,
             campaign: None,
             campaign_detail: None,
             new_campaign: String::new(),
@@ -678,6 +687,7 @@ impl App {
         self.account = None;
         self.campaigns.clear();
         self.campaign = None;
+        self.campaign_action = CampaignAction::None;
         self.scenes.clear();
         self.scene = None;
         self.texture = None;
@@ -1571,27 +1581,51 @@ impl App {
 
     fn show_campaigns(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        let mut switched = false;
+        let mut switch_archive = false;
+        let mut requested_action = None;
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("Кампании")
-                    .size(30.0)
-                    .strong()
-                    .color(WARM_ACCENT),
-            );
-            if ui
-                .button(if self.show_archived {
-                    "Активные"
+                egui::RichText::new(if self.show_archived {
+                    "Архив кампаний"
                 } else {
-                    "Архив"
+                    "Мои кампании"
                 })
-                .clicked()
-            {
-                self.show_archived = !self.show_archived;
-                switched = true;
-            }
+                .size(30.0)
+                .strong()
+                .color(WARM_ACCENT),
+            );
+            ui.weak(format!("· {}", self.campaigns.len()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(if self.show_archived {
+                        "Активные"
+                    } else {
+                        "Архив"
+                    })
+                    .clicked()
+                {
+                    switch_archive = true;
+                }
+                if !self.show_archived {
+                    if ui.button("Войти по коду").clicked() {
+                        requested_action = Some(CampaignAction::Join);
+                    }
+                    if ui.button("Создать").clicked() {
+                        requested_action = Some(CampaignAction::Create);
+                    }
+                }
+            });
         });
-        if switched {
+        if let Some(action) = requested_action {
+            self.campaign_action = if self.campaign_action == action {
+                CampaignAction::None
+            } else {
+                action
+            };
+        }
+        if switch_archive {
+            self.show_archived = !self.show_archived;
+            self.campaign_action = CampaignAction::None;
             if let Err(error) = self.load_campaigns() {
                 self.error = error;
             }
@@ -1599,51 +1633,22 @@ impl App {
         }
         ui.label(
             egui::RichText::new(if self.show_archived {
-                "архив: кампании скрыты из основного списка"
+                "кампании, убранные из основного списка"
             } else {
-                "выберите стол или создайте новый"
+                "столы, где вы участник"
             })
-            .size(16.0)
+            .size(15.0)
             .color(WARM_MUTED),
         );
         ui.add_space(10.0);
-        if self.campaigns.is_empty() {
-            ui.label(if self.show_archived {
-                "архив пуст"
-            } else {
-                "пока пусто — создайте кампанию или войдите по коду"
-            });
-        }
-        let items = self.campaigns.clone();
-        let card_width = ui.available_width().min(760.0);
-        for campaign in items {
-            if self.show_archived {
-                let subtitle = if campaign.archived {
-                    format!("в архиве · роль: {}", role_name(&campaign.role))
-                } else {
-                    format!("роль: {}", role_name(&campaign.role))
-                };
-                let _ = card_button(ui, &campaign.name, &subtitle, card_width);
-                if campaign.role == "owner" {
-                    if accent_button(ui, "Вернуть из архива", 220.0).clicked() {
-                        self.unarchive_campaign(&campaign);
-                    }
-                }
-            } else {
-                let subtitle = format!("роль: {}", role_name(&campaign.role));
-                if card_button(ui, &campaign.name, &subtitle, card_width).clicked() {
-                    self.open_campaign(campaign);
-                }
-            }
-            ui.add_space(6.0);
-        }
-        if !self.show_archived {
-            ui.add_space(12.0);
+
+        let width = ui.available_width().min(820.0);
+        if self.campaign_action == CampaignAction::Create && !self.show_archived {
             warm_frame(WARM_PANEL).show(ui, |ui| {
-                ui.set_width(card_width);
+                ui.set_width(width);
                 ui.label(
                     egui::RichText::new("Новая кампания")
-                        .size(20.0)
+                        .size(19.0)
                         .strong()
                         .color(WARM_TEXT),
                 );
@@ -1652,12 +1657,12 @@ impl App {
                         [320.0, 40.0],
                         egui::TextEdit::singleline(&mut self.new_campaign).hint_text("название"),
                     );
-                    if accent_button(ui, "Создать", 140.0).clicked() {
+                    if accent_button(ui, "Создать", 130.0).clicked() {
                         self.create_campaign();
                     }
                     if ui
                         .add_sized(
-                            [150.0, 42.0],
+                            [140.0, 42.0],
                             egui::Button::new(egui::RichText::new("Демо-стол").strong())
                                 .fill(WARM_ACCENT_DARK)
                                 .stroke(egui::Stroke::new(1.5, WARM_ACCENT)),
@@ -1669,17 +1674,19 @@ impl App {
                 });
             });
             ui.add_space(10.0);
+        }
+        if self.campaign_action == CampaignAction::Join && !self.show_archived {
             warm_frame(WARM_PANEL).show(ui, |ui| {
-                ui.set_width(card_width);
+                ui.set_width(width);
                 ui.label(
                     egui::RichText::new("Войти по коду")
-                        .size(20.0)
+                        .size(19.0)
                         .strong()
                         .color(WARM_TEXT),
                 );
                 ui.label(
                     egui::RichText::new("код приглашения выдаёт мастер кампании")
-                        .size(15.0)
+                        .size(14.0)
                         .color(WARM_MUTED),
                 );
                 ui.horizontal(|ui| {
@@ -1687,11 +1694,84 @@ impl App {
                         [240.0, 40.0],
                         egui::TextEdit::singleline(&mut self.join_code).hint_text("код от мастера"),
                     );
-                    if accent_button(ui, "Войти", 140.0).clicked() {
+                    if accent_button(ui, "Войти", 130.0).clicked() {
                         self.accept_invite();
                     }
                 });
             });
+            ui.add_space(10.0);
+        }
+
+        if self.campaigns.is_empty() {
+            warm_frame(WARM_CARD).show(ui, |ui| {
+                ui.set_width(width);
+                ui.label(
+                    egui::RichText::new(if self.show_archived {
+                        "архив пуст"
+                    } else {
+                        "вы пока не участвуете в кампаниях"
+                    })
+                    .size(17.0)
+                    .color(WARM_MUTED),
+                );
+                if !self.show_archived {
+                    ui.label(
+                        egui::RichText::new("создайте кампанию или войдите по коду")
+                            .size(14.0)
+                            .color(WARM_MUTED),
+                    );
+                }
+            });
+        }
+        let items = self.campaigns.clone();
+        for campaign in items {
+            let role_color = match campaign.role.as_str() {
+                "owner" => WARM_ACCENT,
+                "master" => WARM_ACCENT_HOVER,
+                "player" => WARM_TEXT,
+                _ => WARM_MUTED,
+            };
+            let mut open = false;
+            let mut restore = false;
+            warm_frame(WARM_CARD).show(ui, |ui| {
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&campaign.name)
+                            .size(20.0)
+                            .strong()
+                            .color(WARM_TEXT),
+                    );
+                    ui.label(
+                        egui::RichText::new(role_name(&campaign.role))
+                            .size(14.0)
+                            .color(role_color),
+                    );
+                    if campaign.archived {
+                        ui.weak("в архиве");
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.show_archived {
+                            if campaign.role == "owner" {
+                                if accent_button(ui, "Вернуть", 130.0).clicked() {
+                                    restore = true;
+                                }
+                            }
+                        } else if accent_button(ui, "Открыть →", 150.0).clicked() {
+                            open = true;
+                        }
+                    });
+                });
+            });
+            if open {
+                self.open_campaign(campaign);
+                return;
+            }
+            if restore {
+                self.unarchive_campaign(&campaign);
+                return;
+            }
+            ui.add_space(6.0);
         }
     }
 
