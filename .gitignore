@@ -32,3 +32,4 @@ dist/
 # Тестовые карты мастера и результаты стендов: в git не попадают
 тестовый материал/
 scripts/experiments/**/out/
+scripts/experiments/**/review/
