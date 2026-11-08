@@ -21,14 +21,14 @@ import grid  # noqa: E402
 TILE = 192
 OVERLAP = 48
 THRESHOLD = 0.5
-DEFAULT_MODEL = 'scripts/experiments/annotator/models/annotator_walls.onnx'
+DEFAULT_MODEL = 'scripts/experiments/annotator/models/v2/annotator_walls.onnx'
 
 
 def load_session(model_path):
     return ort.InferenceSession(str(model_path), providers=['CPUExecutionProvider'])
 
 
-def predict_mask(session, image, grid_result=None, suppress_grid=True):
+def predict_mask(session, image, grid_result=None, suppress_grid=True, threshold=THRESHOLD):
     rgb = cv2.imread(str(image))
     height, width = rgb.shape[:2]
     if suppress_grid and grid_result is not None and grid_result['is_grid']:
@@ -59,7 +59,7 @@ def predict_mask(session, image, grid_result=None, suppress_grid=True):
             probability[y:y + real_h, x:x + real_w] += tile[:real_h, :real_w]
             weights[y:y + real_h, x:x + real_w] += 1.0
     probability /= np.maximum(weights, 1e-6)
-    return (probability > THRESHOLD).astype(np.uint8) * 255
+    return (probability > threshold).astype(np.uint8) * 255
 
 
 def walls_from_mask(mask):
@@ -87,10 +87,11 @@ def walls_from_mask(mask):
     return walls
 
 
-def detect(image_path, session, suppress_grid=True):
+def detect(image_path, session, suppress_grid=True, threshold=THRESHOLD):
     image_path = pathlib.Path(image_path)
     result = grid.analyze(image_path)
-    mask = predict_mask(session, image_path, result[1], suppress_grid=suppress_grid)
+    mask = predict_mask(session, image_path, result[1], suppress_grid=suppress_grid,
+                        threshold=threshold)
     return {
         'format_version': 1,
         'image': {'width': result[1]['image']['width'], 'height': result[1]['image']['height']},
@@ -107,11 +108,13 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--model', default=DEFAULT_MODEL)
     parser.add_argument('--no-grid-suppression', action='store_true')
+    parser.add_argument('--threshold', type=float, default=THRESHOLD)
     args = parser.parse_args()
 
     import json
     session = load_session(args.model)
-    document = detect(args.image, session, suppress_grid=not args.no_grid_suppression)
+    document = detect(args.image, session, suppress_grid=not args.no_grid_suppression,
+                      threshold=args.threshold)
     pathlib.Path(args.out).write_text(json.dumps(document, ensure_ascii=False, indent=2) + chr(10),
                                       encoding='utf-8')
     print('стен: ' + str(len(document['walls'])))
