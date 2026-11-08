@@ -109,6 +109,7 @@ enum ChatEvent {
     TokenMoved(Token),
     TokenUpdated(Token),
     SceneShown(SceneSummary, Vec<Token>, HashMap<String, bool>),
+    SceneChanged(String),
     Doors(HashMap<String, bool>),
     DoorSet(String, bool),
     Visibility(VisibilityMask, Option<String>),
@@ -1906,6 +1907,12 @@ impl App {
                                         sender.send(ChatEvent::SceneShown(scene, tokens, doors));
                                 }
                             }
+                            Some("scene.changed") => {
+                                if let Some(scene_id) = value["scene_id"].as_str() {
+                                    let _ =
+                                        sender.send(ChatEvent::SceneChanged(scene_id.to_string()));
+                                }
+                            }
                             Some("token.placed") => {
                                 if let Ok(token) =
                                     serde_json::from_value::<Token>(value["token"].clone())
@@ -2038,6 +2045,17 @@ impl App {
                         self.round = 0;
                         for item in &mut self.scenes {
                             item.active = item.id == scene.id;
+                        }
+                    }
+                }
+                ChatEvent::SceneChanged(id) => {
+                    if id == self.current_scene_id() {
+                        if let Some(summary) =
+                            self.scenes.iter().find(|scene| scene.id == id).cloned()
+                        {
+                            self.edit_mode = EditMode::Off;
+                            self.edit_points.clear();
+                            self.load_scene(&summary, None);
                         }
                     }
                 }

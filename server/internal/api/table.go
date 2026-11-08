@@ -114,6 +114,19 @@ func (r *tableRoom) snapshot() []tableClientConn {
 	return out
 }
 
+// broadcastSceneChanged сообщает столу, что геометрия сцены изменилась.
+// Клиенты перечитывают сцену; маска видимости приходит следующим событием.
+func (s *server) broadcastSceneChanged(campaignID, sceneID string, actor Account) {
+	room := s.hub.room(campaignID)
+	room.broadcast(map[string]any{
+		"type":     "scene.changed",
+		"seq":      room.nextSeq(),
+		"time":     s.now().UTC().Format(time.RFC3339),
+		"scene_id": sceneID,
+		"actor":    actor,
+	})
+}
+
 func (s *server) accountVisibility(campaignID, sceneID, accountID string) (VisibilityMask, bool) {
 	scene, ok := s.content.Scene(campaignID, sceneID)
 	if !ok {

@@ -485,5 +485,7 @@ func (s *server) updateSceneAnnotation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "разметка не сохранилась")
 		return
 	}
+	s.broadcastSceneChanged(campaign.ID, updated.ID, account)
+	s.sendVisibility(s.hub.room(campaign.ID), campaign.ID, updated.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
