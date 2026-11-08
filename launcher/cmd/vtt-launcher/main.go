@@ -46,7 +46,7 @@ func run(args []string) int {
 		showVersion = fs.Bool("version", false, "показать версию лаунчера и выйти")
 		check       = fs.Bool("check", false, "сказать версии и чего не хватает, ничего не менять")
 		installFrom = fs.String("install", "", "поставить из `каталога или архива`, без сети")
-		packages    = fs.String("packages", "", "доставить необязательные пакеты: voice,annotator")
+		packages    = fs.String("packages", "", "доставить необязательные пакеты: voice,master")
 		installDir  = fs.String("install-dir", "", "каталог установки (по умолчанию — рядом с лаунчером)")
 		manifestURL = fs.String("manifest", fetch.ManifestAdr, "адрес latest.json")
 	)
@@ -55,7 +55,7 @@ func run(args []string) int {
 		fmt.Fprintf(fs.Output(), "  vtt-launcher                            доставить недостающее и запустить клиент\n")
 		fmt.Fprintf(fs.Output(), "  vtt-launcher --check                    сказать версии и чего не хватает\n")
 		fmt.Fprintf(fs.Output(), "  vtt-launcher --install <каталог|архив>  поставить из файла, без сети\n")
-		fmt.Fprintf(fs.Output(), "  vtt-launcher --packages voice,annotator доставить необязательные пакеты\n\n")
+		fmt.Fprintf(fs.Output(), "  vtt-launcher --packages voice,master доставить необязательные пакеты\n\n")
 		fmt.Fprintf(fs.Output(), "Флаги:\n")
 		fs.PrintDefaults()
 	}
@@ -98,7 +98,7 @@ func run(args []string) int {
 	})
 }
 
-// parsePackages разбирает «voice, annotator». Имя пакета проверяется здесь же: незнакомое
+// parsePackages разбирает «voice, master». Имя пакета проверяется здесь же: незнакомое
 // лучше назвать сразу, чем молча ничего не поставить (MANIFEST.md, правило 2).
 func parsePackages(s string) ([]string, error) {
 	if strings.TrimSpace(s) == "" {
@@ -110,11 +110,11 @@ func parsePackages(s string) ([]string, error) {
 		switch name {
 		case "":
 			continue
-		case manifest.NameClient, manifest.NameVoice, manifest.NameAnnotator:
+		case manifest.NameClient, manifest.NameVoice, manifest.NameMaster:
 			names = append(names, name)
 		default:
 			return nil, fmt.Errorf("незнакомый пакет %q: бывают %s, %s, %s",
-				name, manifest.NameClient, manifest.NameVoice, manifest.NameAnnotator)
+				name, manifest.NameClient, manifest.NameVoice, manifest.NameMaster)
 		}
 	}
 	return names, nil

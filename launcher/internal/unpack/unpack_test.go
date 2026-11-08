@@ -98,15 +98,15 @@ func TestZipRejectsSymlink(t *testing.T) {
 
 func TestSingleExeCopy(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "vtt-annotator-0.2.0-win64.exe")
+	src := filepath.Join(dir, "vtt-master-0.2.0-win64.exe")
 	if err := os.WriteFile(src, []byte("MZ"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dest := filepath.Join(dir, "annotator-0.2.0")
+	dest := filepath.Join(dir, "master-0.2.0")
 	if err := File(src, dest); err != nil {
 		t.Fatalf("File: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(dest, "vtt-annotator-0.2.0-win64.exe"))
+	got, err := os.ReadFile(filepath.Join(dest, "vtt-master-0.2.0-win64.exe"))
 	if err != nil || string(got) != "MZ" {
 		t.Fatalf("копия одиночного файла: %q, %v", got, err)
 	}

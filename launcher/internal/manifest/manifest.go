@@ -21,9 +21,9 @@ const Format = 2
 
 // Имена пакетов. Список закрытый: client обязателен, остальные ставятся действием человека.
 const (
-	NameClient    = "client"
-	NameVoice     = "voice"
-	NameAnnotator = "annotator"
+	NameClient = "client"
+	NameVoice  = "voice"
+	NameMaster = "master"
 )
 
 // Платформы и архитектуры — закрытые списки. Новое значение (arm64, darwin) — новая версия
@@ -114,7 +114,7 @@ func (m *Manifest) Validate() error {
 		where := fmt.Sprintf("latest.json: packages[%d]", i)
 		if !knownPackage(p.Name) {
 			return fmt.Errorf("%s: name: незнакомый пакет %q (бывают %s, %s, %s)",
-				where, p.Name, NameClient, NameVoice, NameAnnotator)
+				where, p.Name, NameClient, NameVoice, NameMaster)
 		}
 		platform := p.Platform()
 		if err := checkPlatform(platform); err != nil {
@@ -214,7 +214,7 @@ func (m *Manifest) ForPlatform(target Platform) []Package {
 
 func knownPackage(name string) bool {
 	switch name {
-	case NameClient, NameVoice, NameAnnotator:
+	case NameClient, NameVoice, NameMaster:
 		return true
 	default:
 		return false
