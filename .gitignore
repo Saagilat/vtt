@@ -33,3 +33,5 @@ dist/
 тестовый материал/
 scripts/experiments/**/out/
 scripts/experiments/**/review/
+scripts/experiments/**/models/
+scripts/experiments/map_layout/results/

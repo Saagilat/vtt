@@ -137,6 +137,29 @@ def positions(offset, step, limit):
     return result
 
 
+def refine_centers(v, det, radius=3):
+    # Уточняет положение каждой линии по локальному минимуму профиля: шаг из FFT дробный,
+    # и за десятки линий накопленный сдвиг доходит до пары пикселей.
+    centers = []
+    for pos in positions(det['offset'], det['step'], len(v)):
+        left = max(0, pos - radius)
+        right = min(len(v), pos + radius + 1)
+        segment = v[left:right]
+        if len(segment) < 3:
+            continue
+        index = int(np.argmin(segment))
+        shift = 0.0
+        if 0 < index < len(segment) - 1:
+            before, middle, after = (float(segment[index - 1]), float(segment[index]),
+                                     float(segment[index + 1]))
+            denominator = before - 2.0 * middle + after
+            if abs(denominator) > 1e-6:
+                shift = 0.5 * (before - after) / denominator
+                shift = max(-0.5, min(0.5, shift))
+        centers.append(left + index + shift)
+    return centers
+
+
 def estimate_width(v, offset, step):
     widths = []
     for center in positions(offset, step, len(v)):

@@ -5,7 +5,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FILES = [p for p in ROOT.rglob('*.md') if '.git' not in p.parts]
+FILES = [p for p in ROOT.rglob('*.md') if not {'.git', '.venv'} & set(p.parts)]
 
 # Заголовки и пометки, которыми в тексте держали историю. Документ описывает только то,
 # что верно сейчас, поэтому таких слов в нём быть не должно.

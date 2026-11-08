@@ -18,7 +18,7 @@ CODE = re.compile(r'`([^`]*)`')
 
 def documents():
     """Все markdown-файлы репозитория, кроме истории git."""
-    return [p for p in sorted(ROOT.rglob('*.md')) if '.git' not in p.parts]
+    return [p for p in sorted(ROOT.rglob('*.md')) if not {'.git', '.venv'} & set(p.parts)]
 
 
 def slug(text):
