@@ -1112,6 +1112,20 @@ func (d *DB) SetTokenCharacter(campaignID, sceneID, tokenID, characterID string)
 	return d.Token(campaignID, sceneID, tokenID)
 }
 
+// SetTokenOwner назначает владельца фишки; пустой ownerID снимает владельца.
+func (d *DB) SetTokenOwner(campaignID, sceneID, tokenID, ownerID string) (api.Token, bool) {
+	var owner any
+	if ownerID != "" {
+		owner = ownerID
+	}
+	if _, err := d.db.Exec(`UPDATE tokens SET owner_id = ?
+		WHERE campaign_id = ? AND scene_id = ? AND id = ?`,
+		owner, campaignID, sceneID, tokenID); err != nil {
+		return api.Token{}, false
+	}
+	return d.Token(campaignID, sceneID, tokenID)
+}
+
 // SetCharacterHP меняет HP в данных листа, сохраняя остальные поля.
 func (d *DB) SetCharacterHP(campaignID, characterID string, hp, hpMax int) (api.Character, bool) {
 	character, ok := d.Character(campaignID, characterID)

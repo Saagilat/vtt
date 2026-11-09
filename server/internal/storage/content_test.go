@@ -843,6 +843,21 @@ func TestTokenCharacterSync(t *testing.T) {
 	if !ok || unlinked.CharacterID != "" {
 		t.Fatalf("связь не снялась: %+v", unlinked)
 	}
+	bob, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bob.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	owned, ok := db.SetTokenOwner(campaign.ID, scene.ID, token.ID, bob.ID)
+	if !ok || owned.OwnerID != bob.ID || owned.OwnerLogin != "bob" {
+		t.Fatalf("владелец фишки: %+v", owned)
+	}
+	cleared, ok := db.SetTokenOwner(campaign.ID, scene.ID, token.ID, "")
+	if !ok || cleared.OwnerID != "" {
+		t.Fatalf("владелец не снялся: %+v", cleared)
+	}
 }
 
 func TestNotes(t *testing.T) {

@@ -64,6 +64,7 @@ type tableMessage struct {
 	DoorID          string  `json:"door_id,omitempty"`
 	Name            string  `json:"name,omitempty"`
 	OwnerID         string  `json:"owner_id,omitempty"`
+	SetOwnerID      *string `json:"set_owner_id,omitempty"`
 	CharacterID     *string `json:"character_id,omitempty"`
 	AccountID       string  `json:"account_id,omitempty"`
 	Open            bool    `json:"open,omitempty"`
@@ -1089,6 +1090,30 @@ func (s *server) table(w http.ResponseWriter, r *http.Request) {
 					"error":     map[string]string{"code": "forbidden", "message": "чужая фишка"},
 				})
 				continue
+			}
+			if message.SetOwnerID != nil {
+				if !master(campaign.Role) {
+					_ = room.send(conn, map[string]any{
+						"type":      "error",
+						"intent_id": message.IntentID,
+						"error":     map[string]string{"code": "forbidden", "message": "владельца назначает мастер"},
+					})
+					continue
+				}
+				ownerID := *message.SetOwnerID
+				if ownerID != "" {
+					if _, ok := s.content.Campaign(ownerID, campaign.ID); !ok {
+						_ = room.send(conn, map[string]any{
+							"type":      "error",
+							"intent_id": message.IntentID,
+							"error":     map[string]string{"code": "bad_request", "message": "владелец не в кампании"},
+						})
+						continue
+					}
+				}
+				if updated, ok := s.content.SetTokenOwner(campaign.ID, current, token.ID, ownerID); ok {
+					token = updated
+				}
 			}
 			characterID := token.CharacterID
 			characterHP, characterHPMax := 0, 0

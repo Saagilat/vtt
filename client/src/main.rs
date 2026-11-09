@@ -522,6 +522,8 @@ struct App {
     show_settings: bool,
     hint_dismissed: bool,
     drag_token: Option<String>,
+    drag_blocked: bool,
+    selected_token: Option<String>,
     confirm_token_remove: Option<String>,
     reconnect_at: Option<std::time::Instant>,
     reconnect_attempts: u32,
@@ -618,6 +620,8 @@ impl App {
             show_settings: false,
             hint_dismissed: false,
             drag_token: None,
+            drag_blocked: false,
+            selected_token: None,
             confirm_token_remove: None,
             reconnect_at: None,
             reconnect_attempts: 0,
@@ -700,7 +704,11 @@ impl App {
         self.selected_note = None;
         self.tokens.clear();
         self.drag_token = None;
+        self.drag_blocked = false;
+        self.selected_token = None;
         self.confirm_token_remove = None;
+        self.drag_blocked = false;
+        self.selected_token = None;
         self.reconnect_at = None;
         self.reconnect_attempts = 0;
         self.doors.clear();
@@ -2124,17 +2132,33 @@ impl App {
         }
         if self.edit_mode == EditMode::Off && response.drag_started() {
             if let Some(position) = pointer {
-                self.drag_token = self
+                let nearest = self
                     .tokens
                     .iter()
-                    .find(|token| {
+                    .filter_map(|token| {
                         let center = egui::pos2(
                             origin.x + token.x as f32 * self.zoom,
                             origin.y + token.y as f32 * self.zoom,
                         );
-                        center.distance(position) <= 18.0 && self.can_move_token(token)
+                        let distance = center.distance(position);
+                        (distance <= 24.0).then_some((distance, token))
                     })
-                    .map(|token| token.id.clone());
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, token)| token);
+                if let Some(token) = nearest {
+                    if self.can_move_token(token) {
+                        self.drag_token = Some(token.id.clone());
+                        self.drag_blocked = false;
+                    } else {
+                        self.drag_token = None;
+                        self.drag_blocked = true;
+                        self.notice = if token.owner_id.is_empty() {
+                            "у фишки нет владельца — назначьте его в «Мастере»".to_string()
+                        } else {
+                            format!("фишку двигает {} или мастер", token.owner_login)
+                        };
+                    }
+                }
             }
         }
         if self.drag_token.is_some() {
@@ -2159,8 +2183,53 @@ impl App {
                     }
                 }
             }
-        } else if response.dragged() {
+        } else if response.dragged() && !self.drag_blocked {
             self.offset += response.drag_delta();
+        }
+        if response.drag_stopped() {
+            self.drag_blocked = false;
+        }
+        if self.edit_mode == EditMode::Off && response.clicked() {
+            if let Some(position) = pointer {
+                let clicked = self
+                    .tokens
+                    .iter()
+                    .filter_map(|token| {
+                        let center = egui::pos2(
+                            origin.x + token.x as f32 * self.zoom,
+                            origin.y + token.y as f32 * self.zoom,
+                        );
+                        let distance = center.distance(position);
+                        (distance <= 24.0).then_some((distance, token.clone()))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, token)| token);
+                match clicked {
+                    Some(token) => {
+                        self.selected_token = Some(token.id.clone());
+                        if self.can_move_token(&token) {
+                            if !token.character_id.is_empty()
+                                && self
+                                    .characters
+                                    .iter()
+                                    .any(|character| character.id == token.character_id)
+                            {
+                                self.select_character(&token.character_id);
+                                self.panel_tab = PanelTab::Sheet;
+                            } else {
+                                self.panel_tab = PanelTab::Combat;
+                            }
+                        } else {
+                            self.notice = if token.owner_id.is_empty() {
+                                "у фишки нет владельца — назначьте его в «Мастере»".to_string()
+                            } else {
+                                format!("фишку контролирует {}", token.owner_login)
+                            };
+                        }
+                    }
+                    None => self.selected_token = None,
+                }
+            }
         }
         painter.image(
             texture.id(),
@@ -2281,6 +2350,13 @@ impl App {
                 radius,
                 egui::Stroke::new(2.0, egui::Color32::from_rgb(30, 30, 30)),
             );
+            if self.selected_token.as_deref() == Some(token.id.as_str()) {
+                painter.circle_stroke(
+                    center,
+                    radius + 5.0,
+                    egui::Stroke::new(3.0, WARM_ACCENT_HOVER),
+                );
+            }
             let label = center + egui::vec2(0.0, radius + 10.0);
             painter.text(
                 label + egui::vec2(1.0, 1.0),
@@ -3157,6 +3233,13 @@ impl App {
                         .into_iter()
                         .filter(|token| token.scene_id == scene_id)
                         .collect();
+                    if self
+                        .selected_token
+                        .as_ref()
+                        .is_some_and(|id| !self.tokens.iter().any(|token| &token.id == id))
+                    {
+                        self.selected_token = None;
+                    }
                 }
                 ChatEvent::TokenPlaced(token) => {
                     if token.scene_id == self.current_scene_id()
@@ -3177,6 +3260,9 @@ impl App {
                 }
                 ChatEvent::TokenRemoved(token_id) => {
                     self.tokens.retain(|token| token.id != token_id);
+                    if self.selected_token.as_deref() == Some(token_id.as_str()) {
+                        self.selected_token = None;
+                    }
                     if self.turn_token.as_deref() == Some(token_id.as_str()) {
                         self.turn_token = None;
                         self.round = 0;
@@ -3196,6 +3282,13 @@ impl App {
                         .into_iter()
                         .filter(|token| token.scene_id == scene_id)
                         .collect();
+                    if self
+                        .selected_token
+                        .as_ref()
+                        .is_some_and(|id| !self.tokens.iter().any(|token| &token.id == id))
+                    {
+                        self.selected_token = None;
+                    }
                     self.turn_token = None;
                     self.round = 0;
                     self.chat_lines.push(if cleared {
@@ -3452,6 +3545,14 @@ impl App {
         self.send_intent(serde_json::json!({
             "type": "combat.reset",
             "clear_initiative": clear_initiative,
+        }));
+    }
+
+    fn set_token_owner(&mut self, token_id: &str, owner_id: &str) {
+        self.send_intent(serde_json::json!({
+            "type": "token.update",
+            "token_id": token_id,
+            "set_owner_id": owner_id,
         }));
     }
 
@@ -4195,8 +4296,20 @@ impl App {
             } else {
                 ui.heading("Бой");
             }
-            if !self.is_master() {
-                ui.label("перетащите свою фишку по карте");
+            ui.label(
+                egui::RichText::new("ЛКМ — выбрать фишку, перетаскивание — движение")
+                    .size(14.0)
+                    .color(WARM_MUTED),
+            );
+            if let Some(selected) = self.selected_token.as_deref() {
+                if let Some(token) = self.tokens.iter().find(|token| token.id == selected) {
+                    ui.label(
+                        egui::RichText::new(format!("выбрана: {}", token.name))
+                            .size(15.0)
+                            .strong()
+                            .color(WARM_ACCENT_HOVER),
+                    );
+                }
             }
             let mut ordered = self.tokens.clone();
             ordered.sort_by(|a, b| {
@@ -4283,6 +4396,34 @@ impl App {
                     }
                 }
                 if self.is_master() {
+                    let members = self
+                        .campaign_detail
+                        .as_ref()
+                        .map(|detail| detail.members.clone())
+                        .unwrap_or_default();
+                    let owner_label = members
+                        .iter()
+                        .find(|member| member.id == token.owner_id)
+                        .map(|member| member.login.clone())
+                        .unwrap_or_else(|| "без владельца".to_string());
+                    let mut owner = token.owner_id.clone();
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(format!("owner-{}", token.id))
+                            .selected_text(owner_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut owner, String::new(), "без владельца");
+                                for member in &members {
+                                    ui.selectable_value(
+                                        &mut owner,
+                                        member.id.clone(),
+                                        format!("{} ({})", member.login, member.role),
+                                    );
+                                }
+                            });
+                    });
+                    if owner != token.owner_id {
+                        self.set_token_owner(&token.id, &owner);
+                    }
                     let characters = self.characters.clone();
                     let label = characters
                         .iter()
