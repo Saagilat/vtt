@@ -372,6 +372,13 @@ func TestTableChat(t *testing.T) {
 		t.Fatalf("ответ движения: %+v", reply)
 	}
 
+	bobAccount, err := db.CreateAccount("bob", "пароль")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddMember(bobAccount.ID, campaign.ID, api.RolePlayer); err != nil {
+		t.Fatal(err)
+	}
 	character, ok := db.CreateCharacter(campaign.ID, "", "Мира",
 		[]byte(`{"class":"воин","level":2,"hp":9,"max_hp":14,"abilities":{"dex":16}}`))
 	if !ok {
@@ -415,6 +422,19 @@ func TestTableChat(t *testing.T) {
 	var sheet map[string]any
 	if err := json.Unmarshal(character.Data, &sheet); err != nil || sheet["hp"] != float64(4) {
 		t.Fatalf("HP листа после фишки: %s", character.Data)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "token.update", "token_id": linkedID,
+		"set_owner_id": bobAccount.ID, "intent_id": "i2d0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&reply); err != nil {
+		t.Fatalf("смена владельца: %v", err)
+	}
+	owned, ok := reply["token"].(map[string]any)
+	if reply["type"] != "token.updated" || !ok || owned["owner_id"] != bobAccount.ID {
+		t.Fatalf("владелец не сменился: %+v", reply)
 	}
 	if err := conn.WriteJSON(map[string]any{
 		"type": "initiative.roll", "token_id": linkedID, "intent_id": "i2d",
